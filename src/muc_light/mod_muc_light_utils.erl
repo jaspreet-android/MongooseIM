@@ -24,7 +24,7 @@
 -author('piotr.nosek@erlang-solutions.com').
 
 %% API
--export([change_aff_users/2]).
+-export([change_aff_users/3]).
 -export([b2aff/1, aff2b/1]).
 -export([light_aff_to_muc_role/1]).
 -export([room_limit_reached/2]).
@@ -57,20 +57,25 @@
 %% API
 %%====================================================================
 
--spec change_aff_users(CurrentAffUsers :: aff_users(), AffUsersChangesAssorted :: aff_users()) ->
+-spec change_aff_users(HostType :: mongooseim:host_type(), CurrentAffUsers :: aff_users(), AffUsersChangesAssorted :: aff_users()) ->
     change_aff_success() | {error, bad_request()}.
-change_aff_users(AffUsers, AffUsersChangesAssorted) ->
+change_aff_users(HostType, AffUsers, AffUsersChangesAssorted) ->
     case {lists:keyfind(owner, 2, AffUsers), lists:keyfind(owner, 2, AffUsersChangesAssorted)} of
         {false, false} -> % simple, no special cases
             apply_aff_users_change(AffUsers, AffUsersChangesAssorted);
         {false, {_, _}} -> % ownerless room!
             {error, {bad_request, <<"Ownerless room">>}};
         _ ->
+            MultipleAdmin = allow_multiple_admin(HostType),
             lists:foldl(fun(F, Acc) -> F(Acc) end,
                         apply_aff_users_change(AffUsers, AffUsersChangesAssorted),
-                        [fun maybe_demote_old_owner/1,
-                         fun maybe_select_new_owner/1])
+                        change_aff_functions(MultipleAdmin))
     end.
+
+change_aff_functions(false)->
+    [fun maybe_demote_old_owner/1, fun maybe_select_new_owner/1];
+change_aff_functions(true)->
+    [fun maybe_select_new_owner/1].
 
 -spec aff2b(Aff :: aff()) -> binary().
 aff2b(owner) -> <<"owner">>;
@@ -317,3 +322,6 @@ run_forget_room_hook({Room, MucHost}) ->
             ?LOG_ERROR(#{what => run_forget_room_hook_skipped,
                          room => Room, muc_host => MucHost})
     end.
+
+allow_multiple_admin(HostType) ->
+    gen_mod:get_module_opt(HostType, mod_muc_light, allow_multiple_admin).
