@@ -55,7 +55,8 @@
          room_exists/3,
          can_access_identity/3]).
 
--export([get_acc_room_affiliations/2]).
+-export([get_room_affiliations/2,
+         get_acc_room_affiliations/2]).
 
 %% For propEr
 -export([apply_rsm/3]).
@@ -231,6 +232,7 @@ config_spec() ->
                  <<"rooms_per_page">> => #option{type = int_or_infinity,
                                                  validate = positive},
                  <<"rooms_in_rosters">> => #option{type = boolean},
+                 <<"allow_multiple_owners">> => #option{type = boolean},
                  <<"config_schema">> => #list{items = config_schema_spec(),
                                               process = fun ?MODULE:process_config_schema/1}
                 },
@@ -245,6 +247,7 @@ config_spec() ->
                     <<"max_occupants">> => ?DEFAULT_MAX_OCCUPANTS,
                     <<"rooms_per_page">> => ?DEFAULT_ROOMS_PER_PAGE,
                     <<"rooms_in_rosters">> => ?DEFAULT_ROOMS_IN_ROSTERS,
+                    <<"allow_multiple_owners">> => ?DEFAULT_ALLOW_MULTIPLE_OWNERS,
                     <<"config_schema">> => default_schema()}
       }.
 
@@ -381,7 +384,7 @@ make_err(From, To, El, Acc, Reason) ->
     Params :: map(),
     Extra :: gen_hook:extra().
 prevent_service_unavailable(Acc, #{packet := Packet}, _Extra) ->
-    case xml:get_tag_attr_s(<<"type">>, Packet) of
+    case exml_query:attr(Packet, <<"type">>) of
         <<"groupchat">> -> {stop, Acc};
         _Type -> {ok, Acc}
     end.
@@ -557,6 +560,15 @@ acc_room_affiliations(Acc1, #{room := RoomJid}, _Extra) ->
 room_exists(_, #{room := RoomJid}, #{host_type := HostType}) ->
     {ok, mod_muc_light_db_backend:room_exists(HostType, jid:to_lus(RoomJid))}.
 
+-spec get_room_affiliations(mongooseim:host_type(), jid:jid()) ->
+    versioned_affs() | {error, not_exists}.
+get_room_affiliations(HostType, RoomJid) ->
+    Acc1 = mongoose_acc:new(#{location => ?LOCATION,
+                              lserver => RoomJid#jid.lserver,
+                              host_type => HostType}),
+    Acc2 = mongoose_hooks:acc_room_affiliations(Acc1, RoomJid),
+    get_room_affs_from_acc(Acc2, RoomJid).
+
 -spec get_acc_room_affiliations(mongoose_acc:t(), jid:jid()) ->
     {mongoose_acc:t(), versioned_affs() | {error, not_exists}}.
 get_acc_room_affiliations(Acc1, RoomJid) ->
@@ -658,7 +670,7 @@ process_create_aff_users_if_valid(HostType, Creator, AffUsers) ->
     case lists:any(fun ({User, _}) when User =:= Creator -> true;
                        ({_, Aff}) -> Aff =:= none end, AffUsers) of
         false ->
-            process_create_aff_users(Creator, AffUsers, equal_occupants(HostType));
+            process_create_aff_users(HostType, Creator, AffUsers, equal_occupants(HostType));
         true ->
             {error, bad_request}
     end.
@@ -666,11 +678,11 @@ process_create_aff_users_if_valid(HostType, Creator, AffUsers) ->
 equal_occupants(HostType) ->
     gen_mod:get_module_opt(HostType, ?MODULE, equal_occupants).
 
--spec process_create_aff_users(Creator :: jid:simple_bare_jid(), AffUsers :: aff_users(),
+-spec process_create_aff_users(HostType :: host_type(), Creator :: jid:simple_bare_jid(), AffUsers :: aff_users(),
                                EqualOccupants :: boolean()) ->
     {ok, aff_users()} | {error, bad_request}.
-process_create_aff_users(Creator, AffUsers, EqualOccupants) ->
-    case mod_muc_light_utils:change_aff_users([{Creator, creator_aff(EqualOccupants)}], AffUsers) of
+process_create_aff_users(HostType, Creator, AffUsers, EqualOccupants) ->
+    case mod_muc_light_utils:change_aff_users(HostType, [{Creator, creator_aff(EqualOccupants)}], AffUsers) of
         {ok, FinalAffUsers, _ChangedAffUsers, _JoiningUsers, _LeavingUsers} -> {ok, FinalAffUsers};
         Error -> Error
     end.

@@ -173,6 +173,7 @@ rdbms_configs(true, mnesia) ->
     ];
 rdbms_configs(true, cets) ->
     [rdbms,
+     rdbms_no_prefs,
      rdbms_easy,
      rdbms_async_pool,
      rdbms_async_cache,
@@ -182,7 +183,8 @@ rdbms_configs(_, _) ->
     [].
 
 cassandra_configs(true) ->
-     [cassandra];
+     [cassandra,
+      cassandra_eterm];
 cassandra_configs(_) ->
      [].
 
@@ -199,6 +201,7 @@ basic_group_names() ->
      muc_light,
      prefs_cases,
      muc_prefs_cases,
+     no_prefs_cases,
      impl_specific,
      disabled_text_search,
      disabled_complex_queries,
@@ -233,6 +236,10 @@ groups() ->
      || C <- configurations(), {G, Props, Tests} <- basic_groups(),
         not is_skipped(C, G)].
 
+is_skipped(rdbms_no_prefs, G) ->
+    G =:= prefs_cases orelse G =:= muc_prefs_cases;
+is_skipped(_, no_prefs_cases) ->
+    true;
 is_skipped(_, _) ->
     false.
 
@@ -275,6 +282,7 @@ basic_groups() ->
      {muc_light,        [], muc_light_cases()},
      {prefs_cases,      [parallel], prefs_cases()},
      {muc_prefs_cases,  [parallel], muc_prefs_cases()},
+     {no_prefs_cases,   [parallel], no_prefs_cases()},
      {impl_specific,    [], impl_specific()},
      {disabled_text_search, [],
          [{mam04, [], disabled_text_search_cases()}]},
@@ -302,6 +310,7 @@ mam_cases() ->
      mam_service_discovery_to_different_client_bare_jid_results_in_error,
      archive_is_instrumented,
      easy_archive_request,
+     easy_archive_request_old_xmlel_format,
      easy_archive_request_for_the_receiver,
      message_sent_to_yourself,
      range_archive_request,
@@ -509,6 +518,9 @@ muc_prefs_cases() ->
      muc_messages_filtered_when_prefs_default_policy_is_never,
      muc_messages_filtered_when_prefs_default_policy_is_roster].
 
+no_prefs_cases() ->
+    [prefs_disabled_set_request].
+
 impl_specific() ->
     [check_user_exist,
      pm_failed_to_decode_message_in_database,
@@ -627,7 +639,7 @@ init_per_group(Group, ConfigIn) ->
     C = configuration(Group),
     B = basic_group(Group),
     {ModulesToStart, Config0} = required_modules_for_group(C, B, ConfigIn),
-    ct:pal("Init per group ~p; configuration ~p; basic group ~p", [Group, C, B]),
+    ct:log("Init per group ~p; configuration ~p; basic group ~p", [Group, C, B]),
     Config01 = dynamic_modules:save_modules(host_type(), Config0),
     dynamic_modules:ensure_modules(host_type(), ModulesToStart),
     Config1 = do_init_per_group(C, Config01),
@@ -638,6 +650,8 @@ do_init_per_group(C, ConfigIn) ->
     case C of
         cassandra ->
             [{archive_wait, 1500} | Config0];
+        cassandra_eterm ->
+            [{archive_wait, 1500} | Config0];
         elasticsearch ->
             [{archive_wait, 2500} | Config0];
         _ ->
@@ -647,7 +661,8 @@ do_init_per_group(C, ConfigIn) ->
 setup_meck(_, elasticsearch) ->
     ok = rpc(mim(), meck, expect,
              [mongoose_elasticsearch, insert_document, 4, {error, simulated}]);
-setup_meck(_, cassandra) ->
+setup_meck(_, Config) when Config =:= cassandra_eterm;
+                           Config =:= cassandra ->
     ok = rpc(mim(), meck, expect,
              [mongoose_cassandra, cql_write_async, 5, {error, simulated}]);
 setup_meck(drop_msg, Config) when Config =:= rdbms_async_pool;
@@ -743,25 +758,22 @@ maybe_set_wait(C, Types, Config) when C =:= rdbms_async_pool;
 maybe_set_wait(_C, _, Config) ->
     Config.
 
-mam_prefs_backend_module(rdbms, rdbms) ->
-    mod_mam_rdbms_prefs;
-mam_prefs_backend_module(cassandra, cassandra) ->
-    mod_mam_cassandra_prefs;
-mam_prefs_backend_module(_, mnesia) ->
-    mod_mam_mnesia_prefs;
-mam_prefs_backend_module(_, _) ->
-    {error, wrong_db}.
-
 mam_opts_for_conf(elasticsearch) ->
     #{backend => elasticsearch,
       user_prefs_store => mnesia};
 mam_opts_for_conf(cassandra) ->
     #{backend => cassandra,
       user_prefs_store => cassandra};
+mam_opts_for_conf(cassandra_eterm) ->
+    Opts = mam_opts_for_conf(cassandra),
+    Opts#{db_message_format => mam_message_eterm};
 mam_opts_for_conf(rdbms_easy) ->
     EasyOpts = #{db_jid_format => mam_jid_rfc,
                  db_message_format => mam_message_xml},
     maps:merge(EasyOpts, mam_opts_for_conf(rdbms));
+mam_opts_for_conf(rdbms_no_prefs) ->
+    #{async_writer => #{enabled => false},
+      cache_users => false};
 mam_opts_for_conf(rdbms) ->
     #{user_prefs_store => rdbms,
       async_writer => #{enabled => false},
@@ -868,24 +880,37 @@ maybe_skip(C, Config) when C =:= muc_light_failed_to_decode_message_in_database;
             "elasticsearch does not support encodings");
 maybe_skip(C, Config) when C =:= muc_light_sql_query_failed;
                            C =:= pm_sql_query_failed ->
-    skip_if(?config(configuration, Config) =:= elasticsearch orelse
-            ?config(configuration, Config) =:= cassandra,
+    Configuration = ?config(configuration, Config),
+    skip_if(lists:member(Configuration, [elasticsearch, cassandra, cassandra_eterm]),
             "Not an SQL database");
 maybe_skip(C, Config) when C =:= muc_light_include_groupchat_filter;
                            C =:= muc_light_no_pm_stored_include_groupchat_filter;
                            C =:= muc_light_include_groupchat_messages_by_default ->
-    skip_if(?config(configuration, Config) =:= cassandra,
+    Configuration = ?config(configuration, Config),
+    skip_if(lists:member(Configuration, [cassandra, cassandra_eterm]),
             "include_groupchat field is not supported for cassandra backend");
 maybe_skip(C, Config) when C =:= easy_text_search_request;
                            C =:= long_text_search_request;
                            C =:= save_unicode_messages;
                            C =:= muc_text_search_request ->
-    skip_if(?config(configuration, Config) =:= cassandra,
+    Configuration = ?config(configuration, Config),
+    skip_if(lists:member(Configuration, [cassandra, cassandra_eterm]),
             "full text search is not implemented for cassandra backend");
 maybe_skip(C, Config) when C =:= muc_light_async_pools_batch_flush;
                            C =:= async_pools_batch_flush ->
     skip_if(?config(configuration, Config) =/= rdbms_async_pool,
             "only for async pool");
+maybe_skip(C, Config) when C =:= easy_archive_request_old_xmlel_format ->
+    MamOpts = ?config(mam_meta_opts, Config),
+    MamBackend = maps:get(backend, MamOpts, rdbms),
+    DefaultFormat = case MamBackend of
+                        rdbms -> mam_message_compressed_eterm;
+                        _ -> mam_message_xml
+                    end,
+    MessageFormat = maps:get(db_message_format, MamOpts, DefaultFormat),
+    PmMamOpts = maps:get(pm, MamOpts, #{}),
+    PmMessageFormat = maps:get(db_message_format, PmMamOpts, MessageFormat),
+    skip_if(PmMessageFormat =:= mam_message_xml, "run only for eterm PM message format");
 maybe_skip(_C, _Config) ->
     ok.
 
@@ -1225,13 +1250,6 @@ message_dropped(Config) ->
 easy_archive_request(Config) ->
     P = ?config(props, Config),
     F = fun(Alice, Bob) ->
-        %% Alice sends "OH, HAI!" to Bob
-        %% {xmlel,<<"message">>,
-        %%  [{<<"from">>,<<"alice@localhost/res1">>},
-        %%   {<<"to">>,<<"bob@localhost/res1">>},
-        %%   {<<"xml:lang">>,<<"en">>},
-        %%   {<<"type">>,<<"chat">>}],
-        %%   [{xmlel,<<"body">>,[],[{xmlcdata,<<"OH, HAI!">>}]}]}
         escalus:send(Alice, escalus_stanza:chat_to(Bob, <<"OH, HAI!">>)),
         mam_helper:wait_for_archive_size(Alice, 1),
         escalus:send(Alice, stanza_archive_request(P, <<"q1">>)),
@@ -1257,6 +1275,49 @@ easy_archive_request_for_the_receiver(Config) ->
         ok
         end,
     escalus_fresh:story(Config, [{alice, 1}, {bob, 1}], F).
+
+easy_archive_request_old_xmlel_format(Config) ->
+    P = ?config(props, Config),
+    F = fun(Alice, Bob) ->
+        AArcId = rest_helper:make_arc_id(Alice),
+        {BobJid, _, _} = BArcId = rest_helper:make_arc_id(Bob),
+        DateTime = calendar:local_time(),
+        Msg = mam_helper:generate_msg_for_date_user(AArcId, BArcId, DateTime, <<"OH, HAI!">>),
+        Packet = erlang:element(5, Msg),
+        OldFormatPacket =
+            {xmlel,<<"message">>,
+             [{<<"to">>, BobJid}, {<<"type">>,<<"chat">>}],
+             [{xmlel,<<"body">>,[],[{xmlcdata,<<"OH, HAI!">>}]}]},
+
+        Msg1 = erlang:setelement(5, Msg, OldFormatPacket),
+        ct:log("Packet: ~p~n", [Packet]),
+        ct:log("OldFormatPacket: ~p~n", [OldFormatPacket]),
+        mam_helper:put_msg(Msg1),
+        mam_helper:wait_for_archive_size(Alice, 1),
+        escalus:send(Alice, stanza_archive_request(P, <<"q1">>)),
+        Res = wait_archive_respond(Alice),
+        assert_lookup_event(mod_mam_pm_lookup, escalus_utils:get_jid(Alice)),
+        assert_respond_size(1, Res),
+        assert_respond_query_id(P, <<"q1">>, parse_result_iq(Res)),
+        [RespMessage] = respond_messages(Res),
+        ct:log("ResPacket: ~p~n", [RespMessage]),
+
+        ArchivedMsg = exml_query:path(RespMessage, [{element, <<"result">>},
+                                                    {element, <<"forwarded">>},
+                                                    {element, <<"message">>}]),
+        ct:log("ArchivedMsg: ~p~n", [ArchivedMsg]),
+        assert_msg_match(Packet, ArchivedMsg),
+        ok
+        end,
+    escalus_fresh:story(Config, [{alice, 1}, {bob, 1}], F).
+
+assert_msg_match(Pattern, Msg) ->
+    #xmlel{attrs = PatternAttrs, children = PatternChildren} = Pattern,
+    #xmlel{attrs = MsgAttrs, children = MsgChildren} = Msg,
+    [?assertEqual(Value, maps:get(Name, MsgAttrs, undefined),
+                  <<"attribute ", Name/binary>>)
+     || Name := Value <- PatternAttrs],
+    ?assertEqual(PatternChildren, MsgChildren).
 
 message_sent_to_yourself(Config) ->
     P = ?config(props, Config),
@@ -2656,13 +2717,13 @@ muc_sanitize_x_user_in_non_anon_rooms(Config) ->
         escalus:wait_for_stanzas(Alice, 1),
 
         X = #xmlel{name = <<"x">>,
-                   attrs = [{<<"xmlns">>, <<"http://jabber.org/protocol/muc#user">>}],
+                   attrs = #{<<"xmlns">> => <<"http://jabber.org/protocol/muc#user">>},
                    children = [#xmlel{name = <<"item">>,
-                                      attrs = [{<<"affiliation">>, <<"owner">>},
-                                               {<<"jid">>, SpoofJid},
-                                               {<<"role">>, <<"moderator">>}]}]},
+                                      attrs = #{<<"affiliation">> => <<"owner">>,
+                                                <<"jid">> => SpoofJid,
+                                                <<"role">> => <<"moderator">>}}]},
         Body = #xmlel{name = <<"body">>, children = [#xmlcdata{content = Text}]},
-        Stanza = #xmlel{name = <<"message">>, attrs = [{<<"type">>, <<"groupchat">>}],
+        Stanza = #xmlel{name = <<"message">>, attrs = #{<<"type">> => <<"groupchat">>},
                         children = [Body, X]},
 
         %% Bob sends to the chat room.
@@ -3547,6 +3608,18 @@ prefs_set_request(Config) ->
         end,
     escalus:fresh_story(Config, [{alice, 1}], F).
 
+prefs_disabled_set_request(Config) ->
+    F = fun(Alice) ->
+        escalus:send(Alice, stanza_prefs_set_request(<<"roster">>,
+                                                     [<<"romeo@montague.net">>],
+                                                     [<<"montague@montague.net">>],
+                                                     mam_ns_binary())),
+        escalus:assert(is_error, [<<"cancel">>, <<"feature-not-implemented">>],
+                       escalus:wait_for_stanza(Alice)),
+        assert_event_with_jid(mod_mam_pm_set_prefs, escalus_utils:get_short_jid(Alice))
+    end,
+    escalus:fresh_story(Config, [{alice, 1}], F).
+
 query_get_request(Config) ->
     F = fun(Alice) ->
         QueryXmlns = mam_ns_binary_v04(),
@@ -3580,7 +3653,7 @@ prefs_set_cdata_request(Config) ->
         %% </iq>
         escalus:send(Alice, stanza_prefs_set_request(<<"roster">>,
                                                      [<<"romeo@montague.net">>,
-                                                      {xmlcdata, <<"\n">>}, %% Put as it is
+                                                      #xmlcdata{content = <<"\n">>}, %% Put as it is
                                                       <<"montague@montague.net">>], [],
                                                      mam_ns_binary_v04())),
         ReplySet = escalus:wait_for_stanza(Alice),
@@ -3641,7 +3714,7 @@ muc_prefs_set_request_not_an_owner(ConfigIn) ->
                                                                     [<<"montague@montague.net">>],
                                                                     mam_ns_binary()), Room)),
         escalus:assert(is_error, [<<"cancel">>, <<"not-allowed">>], escalus:wait_for_stanza(Bob)),
-        assert_no_event_with_jid(mod_mam_muc_get_prefs, RoomAddr)
+        assert_no_event_with_jid(mod_mam_muc_set_prefs, RoomAddr)
     end,
     RoomOpts = [{persistent, true}],
     UserSpecs = [{alice, 1}, {bob, 1}],
@@ -3688,7 +3761,7 @@ muc_prefs_set_cdata_request(ConfigIn) ->
         Room = ?config(room, Config),
         escalus:send(Alice, stanza_to_room(stanza_prefs_set_request(<<"roster">>,
                                                                     [<<"romeo@montague.net">>,
-                                                                     {xmlcdata, <<"\n">>}, %% Put as it is
+                                                                     #xmlcdata{content = <<"\n">>}, %% Put as it is
                                                                      <<"montague@montague.net">>], [],
                                                                     mam_ns_binary_v04()), Room)),
         ReplySet = escalus:wait_for_stanza(Alice),
@@ -4081,7 +4154,8 @@ message_retraction_is_enabled(Config) ->
     BasicGroup = ?config(basic_group, Config),
     BasicGroup =/= disabled_retraction andalso BasicGroup =/= muc_disabled_retraction.
 
-check_include_groupchat_features(Stanza, cassandra, _BasicGroup) ->
+check_include_groupchat_features(Stanza, Config, _BasicGroup) when Config =:= cassandra_eterm;
+                                                                   Config =:= cassandra ->
     ?assertNot(escalus_pred:has_feature(groupchat_field_ns(), Stanza)),
     ?assertNot(escalus_pred:has_feature(groupchat_available_ns(), Stanza));
 check_include_groupchat_features(Stanza, _Configuration, muc_light) ->
@@ -4113,14 +4187,14 @@ expect_only_original_message(Client, Body) ->
 
 retraction_message(Type, To, ApplyToElement) ->
     #xmlel{name = <<"message">>,
-           attrs = [{<<"type">>, Type},
-                    {<<"to">>, To}],
+           attrs = #{<<"type">> => Type,
+                     <<"to">> => To},
            children = [ApplyToElement]}.
 
 origin_id_element(OriginId) ->
     #xmlel{name = <<"origin-id">>,
-           attrs = [{<<"xmlns">>, <<"urn:xmpp:sid:0">>},
-                    {<<"id">>, OriginId}]}.
+           attrs = #{<<"xmlns">> => <<"urn:xmpp:sid:0">>,
+                     <<"id">> => OriginId}}.
 
 apply_to_element(Config, Copy) ->
     {RetractOn, Id} = case ?config(retract_on, Config) of
@@ -4128,15 +4202,16 @@ apply_to_element(Config, Copy) ->
                           stanza_id -> {stanza_id, stanza_id_from_msg(Copy)};
                           none -> {origin_id, none}
                 end,
+    Attrs = #{<<"xmlns">> => <<"urn:xmpp:fasten:0">>},
     #xmlel{name = <<"apply-to">>,
-           attrs = [{<<"xmlns">>, <<"urn:xmpp:fasten:0">>} | maybe_append_id(Id)],
+           attrs = maybe_append_id(Id, Attrs),
            children = [retract_element(RetractOn)]
           }.
 
-maybe_append_id(none) ->
-    [];
-maybe_append_id(Id) ->
-    [{<<"id">>, Id}].
+maybe_append_id(none, Attrs) ->
+    Attrs;
+maybe_append_id(Id, Attrs) ->
+    Attrs#{<<"id">> => Id}.
 
 stanza_id_from_msg(Msg) ->
     case exml_query:path(Msg, [{element, <<"stanza-id">>}, {attr, <<"id">>}]) of
@@ -4146,10 +4221,10 @@ stanza_id_from_msg(Msg) ->
 
 retract_element(origin_id) ->
     #xmlel{name = <<"retract">>,
-           attrs = [{<<"xmlns">>, <<"urn:xmpp:message-retract:0">>}]};
+           attrs = #{<<"xmlns">> => <<"urn:xmpp:message-retract:0">>}};
 retract_element(stanza_id) ->
     #xmlel{name = <<"retract">>,
-           attrs = [{<<"xmlns">>, <<"urn:esl:message-retract-by-stanza-id:0">>}]}.
+           attrs = #{<<"xmlns">> => <<"urn:esl:message-retract-by-stanza-id:0">>}}.
 
 origin_id() ->
     <<"orig-id-1">>.
@@ -4174,7 +4249,7 @@ assert_failed_to_decode_message(ArcMsg) ->
     #forwarded_message{message_children = [Msg]} = Forwarded,
     ?assertMatch(#xmlel{
         name = <<"error">>,
-        attrs = [{<<"code">>, <<"500">>}, {<<"type">>,<<"wait">>}],
+        attrs = #{<<"code">> := <<"500">>, <<"type">> := <<"wait">>},
         children = [#xmlel{name = <<"internal-server-error">>},
                     #xmlel{name = <<"text">>, children = [#xmlcdata{content = Err}]}]}, Msg).
 

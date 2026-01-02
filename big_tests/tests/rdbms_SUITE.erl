@@ -82,6 +82,7 @@ rdbms_queries_cases() ->
      test_request_transaction,
      test_restart_transaction_with_execute,
      test_restart_transaction_with_execute_eventually_passes,
+     prepare_without_execute_does_not_cause_inconsistency,
      test_failed_transaction_with_execute_wrapped,
      test_failed_wrapper_transaction,
      test_incremental_upsert,
@@ -104,8 +105,7 @@ init_per_suite(Config) ->
          orelse mongoose_helper:is_rdbms_enabled(host_type()) of
         false -> {skip, rdbms_or_ct_not_running};
         true ->
-            %% Warning: inject_module does not really work well with --rerun-big-tests flag
-            mongoose_helper:inject_module(?MODULE),
+            mongoose_helper:inject_module(?MODULE, reload),
             Config1 = mongoose_helper:backup_and_set_config_option(Config, [instrumentation, probe_interval], 1),
             escalus:init_per_suite(Config1)
     end.
@@ -115,15 +115,15 @@ end_per_suite(Config) ->
     escalus:end_per_suite(Config).
 
 init_per_group(tagged_rdbms_queries, Config) ->
-    ExtraConfig = stop_global_default_pool(),
-    instrument_helper:start(declared_events(tagged_rdbms_queries)),
+    ExtraConfig = stop_global_default_pool() ++ [{scope, host_type()}, {tag, tag()}],
+    instrument_helper:start(declared_events(ExtraConfig)),
     start_local_host_type_pool(ExtraConfig),
     ExtraConfig ++ Config;
 init_per_group(global_rdbms_queries, Config) ->
-    ExtraConfig = stop_global_default_pool(),
-    instrument_helper:start(declared_events(global_rdbms_queries)),
+    ExtraConfig = stop_global_default_pool() ++ [{scope, global}, {tag, default}],
+    instrument_helper:start(declared_events(ExtraConfig)),
     restart_global_default_pool(ExtraConfig),
-    [{tag, global} | Config].
+    ExtraConfig ++ Config.
 
 end_per_group(tagged_rdbms_queries, Config) ->
     stop_local_host_type_pool(),
@@ -136,6 +136,14 @@ end_per_group(global_rdbms_queries, Config) ->
 init_per_testcase(test_incremental_upsert, Config) ->
     erase_inbox(Config),
     escalus:init_per_testcase(test_incremental_upsert, Config);
+init_per_testcase(Case = prepare_without_execute_does_not_cause_inconsistency, Config) ->
+    case is_pgsql() orelse is_cockroachdb() of
+        true ->
+            erase_inbox(Config),
+            escalus:init_per_testcase(Case, Config);
+        false ->
+            {skip, "Test for a Postgres-specific issue"}
+    end;
 init_per_testcase(CaseName, Config) ->
     escalus:init_per_testcase(CaseName, Config).
 
@@ -147,18 +155,25 @@ end_per_testcase(CaseName, Config)
          CaseName =:= test_failed_wrapper_transaction ->
     rpc(mim(), meck, unload, []),
     escalus:end_per_testcase(CaseName, Config);
+end_per_testcase(Case = prepare_without_execute_does_not_cause_inconsistency, Config) ->
+    erase_inbox(Config),
+    rpc(mim(), meck, unload, []),
+    escalus:end_per_testcase(Case, Config);
 end_per_testcase(test_incremental_upsert, Config) ->
     erase_inbox(Config),
     escalus:end_per_testcase(test_incremental_upsert, Config);
+end_per_testcase(Case = test_wrapped_request, Config) ->
+    Tag = ?config(tag, Config),
+    ok = rpc(mim(), mongoose_instrument, tear_down, [wrapper_event_spec(Tag)]),
+    escalus:end_per_testcase(Case, Config);
 end_per_testcase(CaseName, Config) ->
     escalus:end_per_testcase(CaseName, Config).
 
-declared_events(tagged_rdbms_queries) ->
-    instrument_helper:declared_events(mongoose_wpool_rdbms, [host_type(), tag()]) ++
-    [{test_wrapped_request, #{pool_tag => tag()}}];
-declared_events(global_rdbms_queries) ->
-    instrument_helper:declared_events(mongoose_wpool_rdbms, [global, default]) ++
-    [{test_wrapped_request, #{pool_tag => global}}].
+declared_events(Config) ->
+    Scope = ?config(scope, Config),
+    Tag = ?config(tag, Config),
+    instrument_helper:declared_events(mongoose_wpool_rdbms, [Scope, Tag]) ++
+    [{test_wrapped_request, #{pool_tag => Tag}}].
 
 %%--------------------------------------------------------------------
 %% Data for cases
@@ -181,33 +196,7 @@ ascii_string_values() ->
 
 unicode_values() ->
     ascii_string_values() ++
-    [<<"юникод"/utf8>>, <<"😁"/utf8>>]
-    ++
-    %% Would fail with binary_data_8k and mssql.
-    %% For some reason mssql returns string "7878...." of length 4000.
-    %% What is 78? 16#78 = 120 = $x.
-    %% i.e. half of 8000 bytes for data.
-    %% Probably 2 bytes encoding is used for this.
-%   [binary:copy(<<$x>>, 4001),
-    %% Helps to debug if we don't consume all data from a buffer.
-    %% Than there would be a gap of missing numbers in the middle.
-    %% 1000 of 1-es, 1000 of 2-s, ..., 1000 of 10-s.
-    %%
-    %% In one version of eodbc, it returns 5,5,5,5... instead of 1,1,1,1...
-    %%
-    %% Also,
-    %% eodbc:sql_query(Conn, "SELECT convert(varbinary(max), binary_data_8k) FROM test_types") = gives correct result.
-    %% but
-    %% eodbc:sql_query(Conn, "SELECT binary_data_8k FROM test_types") = gives not correct result.
-    %%
-    %% eodbc:sql_query(Conn, "SELECT convert(varbinary(1000), binary_data_8k) FROM test_types") = gives correct result.
-    %% gives 010101.... as expected
-    [iolist_to_binary([lists:duplicate(1000, X) || X <- lists:seq(1, 10)]),
-     binary:copy(<<$a>>, 10000),
-    %% There is a bug with 8001 chars limit in upstream odbc
-    %% We use a fork arcusfelis/eodbc, that has the bug fixed
-    %% https://bugs.erlang.org/browse/ERL-421
-     binary:copy(<<10>>, 10000), null].
+    [<<"юникод"/utf8>>, <<"😁"/utf8>>].
 
 binary_values() ->
     [<<0>>, <<"255">>,
@@ -219,19 +208,13 @@ binary_values() ->
     %% two kilobytes
     binary:copy(<<2>>, 2048),
     binary:copy(<<5>>, 1024*5),
-    %% There is a bug with 8001 chars limit in upstream odbc
-    %% We use a fork arcusfelis/eodbc, that has the bug fixed
-    %% https://bugs.erlang.org/browse/ERL-421
-    binary:copy(<<8>>, 8002),
     binary:copy(<<0>>, 100000),
     null
     ] ++
-    case is_odbc() orelse is_pgsql() orelse is_cockroachdb() of
+    case is_pgsql() orelse is_cockroachdb() of
         true ->
             [];
         false ->
-            %% FIXME long data causes timeout with mssql
-            %%
             %% FIXME %% epgsql_sock:handle_info/2 is not optimized
             %% The query takes 30 seconds on Postgres
             %% mongoose_rdbms:sql_query(<<"localhost">>, <<"SELECT binary_data_16m FROM test_types">>).
@@ -369,11 +352,11 @@ read_prep_boolean_case(Config) ->
 
 select_current_timestamp_case(Config) ->
     ok = rpc(mim(), mongoose_rdbms_timestamp, prepare, []),
-    Res = case ?config(tag, Config) of
-              global ->
+    Res = case {?config(scope, Config), ?config(tag, Config)} of
+              {global, default} ->
                   rpc(mim(), mongoose_rdbms_timestamp, select, []);
-              Tag ->
-                  rpc(mim(), mongoose_rdbms_timestamp, select, [host_type(), Tag])
+              {Scope, Tag} ->
+                  rpc(mim(), mongoose_rdbms_timestamp, select, [Scope, Tag])
           end,
     assert_is_integer(Res).
 
@@ -413,7 +396,7 @@ arguments_from_two_tables(Config) ->
     erase_users(Config),
     ok.
 
-%% Ensures that ODBC uses a correct type when encoding NULL
+%% Ensures that DB uses a correct type when encoding NULL
 %% and it does not interfere with non-null values
 insert_batch_with_null_case(Config) ->
     erase_table(Config),
@@ -432,7 +415,7 @@ test_cast_insert(Config) ->
                 <<"INSERT INTO test_types(unicode) VALUES (?)">>),
     sql_execute_cast(Config, insert_one, [<<"check1">>]),
     sql_query_cast(Config, <<"INSERT INTO test_types(unicode) VALUES ('check2')">>),
-    mongoose_helper:wait_until(
+    wait_helper:wait_until(
       fun() ->
               SelectResult = sql_query(Config, "SELECT unicode FROM test_types"),
               ?assertEqual({selected, [{<<"check1">>}, {<<"check2">>}]},
@@ -445,7 +428,7 @@ test_request_insert(Config) ->
                 <<"INSERT INTO test_types(unicode) VALUES (?)">>),
     sql_execute_request(Config, insert_one, [<<"check1">>]),
     sql_query_request(Config, <<"INSERT INTO test_types(unicode) VALUES ('check2')">>),
-    mongoose_helper:wait_until(
+    wait_helper:wait_until(
       fun() ->
               SelectResult = sql_query(Config, "SELECT unicode FROM test_types"),
               ?assertEqual({selected, [{<<"check1">>}, {<<"check2">>}]},
@@ -470,7 +453,7 @@ test_wrapped_request(Config) ->
     sql_execute_wrapped_request_and_wait_response(Config, insert_one, [<<"check1">>], WrapperFun),
 
     % then
-    mongoose_helper:wait_until(
+    wait_helper:wait_until(
         fun() ->
             SelectResult = sql_query(Config, "SELECT unicode FROM test_types"),
             ?assertEqual({selected, [{<<"check1">>}]}, selected_to_sorted(SelectResult))
@@ -501,7 +484,7 @@ test_request_transaction(Config) ->
     Queries = [<<"INSERT INTO test_types(unicode) VALUES ('check1')">>,
                <<"INSERT INTO test_types(unicode) VALUES ('check2')">>],
     sql_transaction_request(Config, Queries),
-    mongoose_helper:wait_until(
+    wait_helper:wait_until(
       fun() ->
               SelectResult = sql_query(Config, "SELECT unicode FROM test_types"),
               ?assertEqual({selected, [{<<"check1">>}, {<<"check2">>}]},
@@ -539,6 +522,31 @@ test_restart_transaction_with_execute_eventually_passes(Config) ->
     {atomic, ok} = sql_transaction(Config, F),
     called_times(3),
     ok.
+
+prepare_without_execute_does_not_cause_inconsistency(Config) ->
+    prepare_insert_int8(Config),
+    Args = [rdbms, ?config(scope, Config), ?config(tag, Config)],
+    Pool = rpc(mim(), mongoose_wpool, make_pool_name, Args),
+    [Key1, Key2] = make_hash_keys(2, Pool),
+
+    %% Simulate a call to 'prepare' with missing subsequent 'execute'
+    ok = rpc(mim(), meck, new, [mongoose_rdbms_backend, [passthrough, no_link]]),
+    ok = rpc(mim(), meck, expect, [mongoose_rdbms_backend, execute, 4, ok]),
+    ok = call_worker(Args, Key1, {sql_execute, insert_int8, [1]}),
+
+    %% Insert the data using a different worker
+    Insert = <<"INSERT INTO inbox VALUES ('alice', 'localhost', 'bob@localhost', "
+               "'msg-id', 'inbox', 'content', 14, 0, 0)">>,
+    {updated, 1} = call_worker(Args, Key2, {sql_query, Insert}),
+
+    %% Make sure that worker 1 is not stuck in the previous transaction after 'prepare'
+    {selected, [{<<"14">>}]} = call_worker(Args, Key1, {sql_query, <<"SELECT timestamp FROM inbox">>}).
+
+%% Send the SQL command to a particular DB worker
+call_worker(Args, HashKey, Operation) ->
+    TS = rpc(mim(), erlang, monotonic_time, [millisecond]),
+    Command = {sql_cmd, Operation, TS},
+    rpc(mim(), mongoose_wpool, call, Args ++ [HashKey, Command]).
 
 test_failed_transaction_with_execute_wrapped(Config) ->
     % given
@@ -607,24 +615,14 @@ called_times(N) ->
     called_times(N - 1).
 
 test_incremental_upsert(Config) ->
-    case is_odbc() of
-        true ->
-            ok;
-        false ->
-            do_test_incremental_upsert(Config)
-    end.
-
-do_test_incremental_upsert(Config) ->
     KeyFields = [<<"luser">>, <<"lserver">>, <<"remote_bare_jid">>],
     InsertFields = KeyFields ++ [<<"msg_id">>, <<"content">>, <<"unread_count">>, <<"timestamp">>],
-
-    Key = [<<"alice">>, <<"localhost">>, <<"bob@localhost">>],
     Insert = [<<"alice">>, <<"localhost">>, <<"bob@localhost">>, <<"msg_id">>, <<"content">>, 1],
     sql_prepare_upsert(Config, upsert_incr, inbox,
                        InsertFields, [<<"timestamp">>], KeyFields, <<"timestamp">>),
-    sql_execute_upsert(Config, upsert_incr, Insert ++ [42], [42], Key),
-    sql_execute_upsert(Config, upsert_incr, Insert ++ [43], [43], Key),
-    sql_execute_upsert(Config, upsert_incr, Insert ++ [0], [0], Key),
+    sql_execute_upsert(Config, upsert_incr, Insert ++ [42], [42]),
+    sql_execute_upsert(Config, upsert_incr, Insert ++ [43], [43]),
+    sql_execute_upsert(Config, upsert_incr, Insert ++ [0], [0]),
     SelectResult = sql_query(Config, <<"SELECT timestamp FROM inbox">>),
     ?assertEqual({selected, [{<<"43">>}]}, selected_to_binary(SelectResult)).
 
@@ -687,11 +685,11 @@ test_upsert_many2_replaces_existing(Config) ->
 
 pool_probe_metrics_are_updated(Config) ->
     Tag = ?config(tag, Config),
-    {Event, Labels} = case Tag of
+    {Event, Labels} = case ?config(scope, Config) of
                           global ->
-                              {wpool_global_rdbms_stats, #{pool_tag => default}};
-                          Tag ->
-                              {wpool_rdbms_stats, #{host_type => host_type(), pool_tag => Tag}}
+                              {wpool_global_rdbms_stats, #{pool_tag => Tag}};
+                          Scope ->
+                              {wpool_rdbms_stats, #{host_type => Scope, pool_tag => Tag}}
                       end,
     #{recv_oct := Recv, send_oct := Send} = rpc(mim(), mongoose_wpool_rdbms, probe, [Event, Labels]),
 
@@ -718,10 +716,12 @@ tag() ->
     extra_tag.
 
 scope_and_tag(Config) ->
-    case ?config(tag, Config) of
-        global -> [host_type()];
-        Tag -> [host_type(), Tag]
-    end.
+    skip_default_tag([?config(scope, Config), ?config(tag, Config)]).
+
+skip_default_tag([Scope, default]) ->
+    [Scope];
+skip_default_tag(ScopeAndTag) ->
+    ScopeAndTag.
 
 sql_query(Config, Query) ->
     ScopeAndTag = scope_and_tag(Config),
@@ -767,9 +767,9 @@ execute_wrapped_request_and_wait_response(HostType, Name, Parameters, WrapperFun
     RequestId = mongoose_rdbms:execute_wrapped_request(HostType, Name, Parameters, WrapperFun),
     gen_server:wait_response(RequestId, 100).
 
-sql_execute_upsert(Config, Name, Insert, Update, Unique) ->
+sql_execute_upsert(Config, Name, Insert, Update) ->
     ScopeAndTag = scope_and_tag(Config),
-    slow_rpc(rdbms_queries, execute_upsert, ScopeAndTag ++ [Name, Insert, Update, Unique]).
+    slow_rpc(rdbms_queries, execute_upsert, ScopeAndTag ++ [Name, Insert, Update]).
 
 sql_execute_upsert_many(Config, Name, Insert, Update) ->
     ScopeAndTag = scope_and_tag(Config),
@@ -872,7 +872,6 @@ integer_to_binary_or_null(X) -> integer_to_binary(X).
 
 %% Helper function to transform values to an uniform format.
 %% Single tuple, single element case.
-%% In ODBC int32 is integer, but int64 is binary.
 selected_to_binary({selected, Rows}) ->
     {selected, [row_to_binary(Row) || Row <- Rows]};
 selected_to_binary(Other) ->
@@ -980,7 +979,7 @@ check_binary(Config, Value, Column) ->
                         selected_unescape(Config, SelectResult),
                         #{erase_result => EraseResult,
                           inserted_length => byte_size_or_null(Value),
-                          %% pgsql+odbc can truncate binaries
+                          %% pgsql can truncate binaries
                           maybe_selected_length => maybe_selected_length(Config, SelectResult),
                           maybe_selected_tail => maybe_selected_tail(Config, SelectResult),
                           compare_selected => compare_selected(Config, selected_unescape(Config, SelectResult), Value),
@@ -1090,15 +1089,12 @@ check_prep_ascii_string(Config, Value) ->
     check_generic_prep(Config, Value, <<"ascii_string">>).
 
 check_prep_binary_65k(Config, Value) ->
-    %% MSSQL returns binaries in HEX encoding
     check_generic_prep(Config, Value, <<"binary_data_65k">>, unescape_binary).
 
 check_prep_binary_8k(Config, Value) ->
-    %% MSSQL returns binaries in HEX encoding
     check_generic_prep(Config, Value, <<"binary_data_8k">>, unescape_binary).
 
 check_prep_binary_16m(Config, Value) ->
-    %% MSSQL returns binaries in HEX encoding
     check_generic_prep(Config, Value, <<"binary_data_16m">>, unescape_binary).
 
 check_generic_prep_integer(Config, Value, Column) ->
@@ -1109,17 +1105,6 @@ check_prep_enum_char(Config, Value) ->
 
 check_prep_boolean(Config, Value) ->
     check_generic_prep(Config, Value, <<"bool_flag">>, boolean_to_binary_int).
-
-%% Data types
-%% {ok, Conn} = odbc:connect("DSN=mongoose-mssql;UID=sa;PWD=mongooseim_secret+ESL123", []).
-%% odbc:describe_table(Conn, "test_types").
-%% [{"unicode",{sql_wvarchar,536870911}},
-%%  {"binary_data_65k",'SQL_VARBINARY'},
-%%  {"ascii_char",{sql_char,1}},
-%%  {"ascii_string",{sql_varchar,250}},
-%%  {"int32",sql_integer},
-%%  {"int64",'SQL_BIGINT'},
-%%  {"int8",sql_tinyint}]
 
 check_generic_prep(Config, Value, Column) ->
     check_generic_prep(Config, Value, Column, to_binary).
@@ -1148,14 +1133,7 @@ check_generic_prep(Config, Value, Column, TransformResult) ->
                           select_query => SelectQuery,
                           select_result => SelectResult,
                           insert_result => InsertResult}),
-    check_generic_filtered_prep(Config, Value, Column, TransformResult),
-    case is_odbc() of
-        true ->
-            %% TOP is mssql feature, all other databases use LIMIT.
-            check_generic_filtered_top_prep(Config, Value, Column, TransformResult);
-        false ->
-            ok
-    end.
+    check_generic_filtered_prep(Config, Value, Column, TransformResult).
 
 %% We want to ensure that variable substitution works in SELECTS too.
 %% We also want to check the result value is encoded correctly.
@@ -1178,30 +1156,6 @@ check_generic_filtered_prep(Config, Value, Column, TransformResult) ->
                           prepare_result => PrepareResult,
                           select_query => SelectQuery,
                           select_result => SelectResult}).
-
-check_generic_filtered_top_prep(_Config, null, _Column, _TransformResult) ->
-    skip_null_test;
-check_generic_filtered_top_prep(Config, Value, Column, TransformResult) ->
-    %% SQL Server requires you to place parenthesis around the argument to top if you pass in a variable:
-    %% https://stackoverflow.com/questions/7038818/ms-sql-exception-incorrect-syntax-near-p0
-    SelectQuery = <<"SELECT TOP (?) ", Column/binary,
-            " FROM test_types WHERE ", Column/binary, " = ?">>,
-    Name = list_to_atom("select_filtered_top_" ++ binary_to_list(Column)),
-    Table = test_types,
-    Fields = [limit, binary_to_atom(Column, utf8)],
-    PrepareResult = sql_prepare(Config, Name, Table, Fields, SelectQuery),
-    Parameters = [30, Value],
-    SelectResult = sql_execute(Config, Name, Parameters),
-    %% Compare as binaries
-    ?assert_equal_extra({selected, [{value_to_binary(Value)}]},
-                        transform_selected(TransformResult, Config, SelectResult),
-                        #{column => Column,
-                          test_value => Value,
-                          prepare_result => PrepareResult,
-                          select_query => SelectQuery,
-                          select_result => SelectResult}).
-
-
 
 transform_selected(to_binary, _Config, SelectResult) ->
     selected_to_binary(SelectResult);
@@ -1268,9 +1222,6 @@ drop_common_prefix(Pos, SelValue, Value) ->
 db_engine() ->
     escalus_ejabberd:rpc(mongoose_rdbms, db_engine, [host_type()]).
 
-is_odbc() ->
-    db_engine() == odbc.
-
 is_pgsql() ->
     db_engine() == pgsql.
 
@@ -1285,7 +1236,7 @@ stop_global_default_pool() ->
     [GlobalRdbmsPool] = [Pool || Pool = #{type := rdbms, scope := global, tag := default} <- Pools],
     ok = rpc(mim(), mongoose_wpool, stop, [rdbms, global, default]),
     Extra = maybe_stop_service_domain_db(),
-    [{tag, tag()}, {global_default_rdbms_pool, GlobalRdbmsPool} | Extra].
+    [{global_default_rdbms_pool, GlobalRdbmsPool} | Extra].
 
 restart_global_default_pool(Config) ->
     GlobalRdbmsPool = ?config(global_default_rdbms_pool, Config),
@@ -1390,3 +1341,24 @@ check_like_not_matching_prep(SelName, Config, _TextValue, NotMatching, Info) ->
                         SelectResult,
                         Info#{pattern => NotMatching,
                               select_result => SelectResult}).
+
+%% Generate a list of Num numerical keys resolving to different Pool workers using hash_worker
+make_hash_keys(Num, Pool) ->
+    Workers = rpc(mim(), wpool_pool, get_workers, [Pool]),
+    if Num =< length(Workers) ->
+            lists:reverse(make_hash_keys(Num, Pool, Workers, 1, []));
+       true ->
+            ct:fail("Not enough workers in ~p (needed: ~p, actual: ~p)",
+                    [Pool, Num, length(Workers)])
+    end.
+
+make_hash_keys(RemainingNum, Pool, Workers, Key, Acc) when RemainingNum > 0 ->
+    Worker = rpc(mim(), wpool_pool, hash_worker, [Pool, Key]),
+    case lists:member(Worker, Workers) of
+        true ->
+            make_hash_keys(RemainingNum - 1, Pool, Workers -- [Worker], Key + 1, [Key | Acc]);
+        false ->
+            make_hash_keys(RemainingNum, Pool, Workers, Key + 1, Acc)
+    end;
+make_hash_keys(0, _WorkerNum, _Workers, _Key, Acc) ->
+    Acc.

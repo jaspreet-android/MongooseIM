@@ -144,26 +144,10 @@ skip_or_run_inbox_tests(TestCases) ->
     end.
 
 maybe_run_in_parallel(Gs) ->
-    %% These could be parallel but it seems like mssql CI can't handle the load
-    case distributed_helper:rpc(
-           distributed_helper:mim(), mongoose_rdbms, db_engine, [domain_helper:host_type()]) of
-        odbc -> Gs;
-        _ -> insert_parallels(Gs)
-    end.
+    ct_helper:add_params_to_list(Gs, [parallel], non_parallel_groups()).
 
-insert_parallels(Gs) ->
-    Fun = fun({muclight_config, Conf, Tests}) ->
-                  {muclight_config, Conf, Tests};
-             ({bin, Conf, Tests}) ->
-                  {bin, Conf, Tests};
-             ({regular, Conf, Tests}) ->
-                  {regular, Conf, Tests};
-             ({async_pools, Conf, Tests}) ->
-                  {async_pools, Conf, Tests};
-             ({Group, Conf, Tests}) ->
-                  {Group, [parallel | Conf], Tests}
-          end,
-    lists:map(Fun, Gs).
+non_parallel_groups() ->
+    [muclight_config, bin, regular, async_pools].
 
 inbox_modules(Backend) ->
     [
@@ -269,9 +253,9 @@ get_inbox(Client, GetParams, ExpectedResult) ->
 get_inbox(Client, GetParams, #{count := ExpectedCount} = ExpectedResult, Check) ->
     GetInbox = make_inbox_stanza(GetParams),
     Validator = fun(#{respond_messages := Val}) -> ExpectedCount =:= length(Val) end,
-    {ok, Inbox} = mongoose_helper:wait_until(
+    {ok, Inbox} = wait_helper:wait_until(
                     fun() -> Check(do_get_inbox(Client, GetInbox)) end,
-                    Validator, #{name => inbox_size}),
+                    ok, #{validator => Validator, name => inbox_size}),
     #{respond_iq := ResIQ} = Inbox,
     ?assert(escalus_pred:is_iq_result(GetInbox, ResIQ)),
     check_result(ResIQ, ExpectedResult),
@@ -317,9 +301,9 @@ check_result(Packet, ExpectedResult) ->
                 ExpectedResult).
 
 maybe_make_queryid(iq_id) ->
-    #{iq_id => base16:encode(crypto:strong_rand_bytes(16))};
+    #{iq_id => binary:encode_hex(crypto:strong_rand_bytes(16), lowercase)};
 maybe_make_queryid(queryid) ->
-    #{queryid => base16:encode(crypto:strong_rand_bytes(16))};
+    #{queryid => binary:encode_hex(crypto:strong_rand_bytes(16), lowercase)};
 maybe_make_queryid(undefined) ->
     #{}.
 
@@ -374,16 +358,18 @@ make_inbox_stanza() ->
 -spec make_inbox_stanza(GetParams :: inbox_query_params()) -> exml:element().
 make_inbox_stanza(GetParams) ->
     GetIQ = inbox_iq(GetParams),
+    Attrs = maybe_query_params(GetParams),
     QueryTag = #xmlel{name = <<"inbox">>,
-                      attrs = [{<<"xmlns">>, ?NS_ESL_INBOX} | maybe_query_params(GetParams)],
+                      attrs = Attrs#{<<"xmlns">> => ?NS_ESL_INBOX},
                       children = [make_inbox_form(GetParams) | rsm(GetParams)]},
     GetIQ#xmlel{children = [QueryTag]}.
 
 -spec make_inbox_stanza(GetParams :: inbox_query_params(), Verify :: boolean()) -> exml:element().
 make_inbox_stanza(GetParams, Verify) ->
     GetIQ = inbox_iq(GetParams),
+    Attrs = maybe_query_params(GetParams),
     QueryTag = #xmlel{name = <<"inbox">>,
-                      attrs = [{<<"xmlns">>, ?NS_ESL_INBOX} | maybe_query_params(GetParams)],
+                      attrs = Attrs#{<<"xmlns">> => ?NS_ESL_INBOX},
                       children = [make_inbox_form(GetParams, Verify) | rsm(GetParams)]},
     GetIQ#xmlel{children = [QueryTag]}.
 
@@ -393,12 +379,10 @@ inbox_iq(#{iq_id := IqId}) ->
 inbox_iq(_) ->
     escalus_stanza:iq_set(?NS_ESL_INBOX, []).
 
-maybe_query_params(#{queryid := undefined}) ->
-    [];
-maybe_query_params(#{queryid := QueryId}) ->
-    [{<<"queryid">>, QueryId}];
+maybe_query_params(#{queryid := QueryId}) when QueryId =/= undefined->
+    #{<<"queryid">> => QueryId};
 maybe_query_params(_) ->
-    [].
+    #{}.
 
 rsm(Params) ->
     Max = maps:get(limit, Params, undefined),
@@ -420,7 +404,7 @@ rsm(Params) ->
     case Elems of
         [] -> [];
         _ -> [#xmlel{name = <<"set">>,
-                     attrs = [{<<"xmlns">>, ?NS_RSM}],
+                     attrs = #{<<"xmlns">> => ?NS_RSM},
                      children = Elems}]
     end.
 
@@ -445,17 +429,13 @@ make_reset_inbox_stanza(InterlocutorJid) when is_binary(InterlocutorJid) ->
     escalus_stanza:iq(
       <<"set">>,
       [#xmlel{name = <<"reset">>,
-              attrs = [
-                       {<<"xmlns">>, inbox_ns_conversation()},
-                       {<<"jid">>, InterlocutorJid}
-                      ]}]);
+              attrs = #{<<"xmlns">> => inbox_ns_conversation(),
+                        <<"jid">> => InterlocutorJid}}]);
 make_reset_inbox_stanza(undefined) ->
     escalus_stanza:iq(
       <<"set">>,
       [#xmlel{name = <<"reset">>,
-              attrs = [
-                       {<<"xmlns">>, inbox_ns_conversation()}
-                      ]}]);
+              attrs = #{<<"xmlns">> => inbox_ns_conversation()}}]);
 make_reset_inbox_stanza(InterlocutorJid) ->
     make_reset_inbox_stanza(escalus_utils:get_short_jid(InterlocutorJid)).
 
@@ -601,7 +581,7 @@ stanza_set_affiliations(Room, List) ->
 
 aff_to_iq_item({JID, Affiliation}) ->
     #xmlel{name = <<"item">>,
-        attrs = [{<<"jid">>, JID}, {<<"affiliation">>, Affiliation}]}.
+        attrs = #{<<"jid">> => JID, <<"affiliation">> => Affiliation}}.
 
 nick(User) -> escalus_utils:get_username(User).
 
@@ -609,7 +589,7 @@ stanza_muc_enter_room(Room, Nick) ->
     stanza_to_room(
         escalus_stanza:presence(<<"available">>,
                                 [#xmlel{name = <<"x">>,
-                                        attrs=[{<<"xmlns">>, <<"http://jabber.org/protocol/muc">>}]}
+                                        attrs=#{<<"xmlns">> => <<"http://jabber.org/protocol/muc">>}}
                                 ]),
         Room, Nick).
 

@@ -30,14 +30,19 @@
 
 -export([start_link/0, init/1]).
 -export([start_child/1, start_child/2, stop_child/1]).
--export([create_ets_table/2]).
+-export([create_ets_table/2, template_supervisor_spec/2]).
+
+-export([start_linked_child/2]).
+-ignore_xref([start_linked_child/2]).
 
 -include("mongoose_logger.hrl").
 
+-spec start_link() -> supervisor:startlink_err().
 start_link() ->
-    supervisor:start_link({local, ?MODULE}, ?MODULE, []).
+    supervisor:start_link({local, ?MODULE}, ?MODULE, noargs).
 
-init([]) ->
+-spec init(noargs) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
+init(noargs) ->
     Hooks = worker_spec(gen_hook),
     Instrument = worker_spec(mongoose_instrument),
     Cleaner = worker_spec(mongoose_cleaner),
@@ -52,18 +57,14 @@ init([]) ->
     Listener = supervisor_spec(mongoose_listener_sup),
     ShaperSup = mongoose_shaper:child_spec(),
     DomainSup = supervisor_spec(mongoose_domain_sup),
-    ReceiverSupervisor =
-        ejabberd_tmp_sup_spec(mongoose_transport_sup, [mongoose_transport_sup, mongoose_transport]),
+    S2SReceiverSupervisor =
+        template_supervisor_spec(mongoose_s2s_socket_out_sup, mongoose_s2s_socket_out),
     C2SSupervisor =
-        ejabberd_tmp_sup_spec(mongoose_c2s_sup, [mongoose_c2s_sup, mongoose_c2s]),
-    S2SInSupervisor =
-        ejabberd_tmp_sup_spec(ejabberd_s2s_in_sup, [ejabberd_s2s_in_sup, ejabberd_s2s_in]),
+        template_supervisor_spec(mongoose_c2s_sup, mongoose_c2s),
     S2SOutSupervisor =
-        ejabberd_tmp_sup_spec(ejabberd_s2s_out_sup, [ejabberd_s2s_out_sup, ejabberd_s2s_out]),
-    ServiceSupervisor =
-        ejabberd_tmp_sup_spec(ejabberd_service_sup, [ejabberd_service_sup, ejabberd_service]),
+        template_supervisor_spec(mongoose_s2s_out_sup, mongoose_s2s_out),
     IQSupervisor =
-        ejabberd_tmp_sup_spec(ejabberd_iq_sup, [ejabberd_iq_sup, mongoose_iq_worker]),
+        template_supervisor_spec(ejabberd_iq_sup, mongoose_iq_worker),
     {ok, {{one_for_one, 10, 1},
           [StartIdServer,
            PG,
@@ -75,12 +76,10 @@ init([]) ->
            ] ++ mongoose_cets_discovery:supervisor_specs() ++ [
            Router,
            S2S,
-           Local,
-           ReceiverSupervisor,
-           C2SSupervisor,
-           S2SInSupervisor,
+           S2SReceiverSupervisor,
            S2SOutSupervisor,
-           ServiceSupervisor,
+           Local,
+           C2SSupervisor,
            IQSupervisor,
            Listener,
            MucIQ,
@@ -109,10 +108,16 @@ stop_child(Proc) ->
     supervisor:delete_child(ejabberd_sup, Proc),
     ok.
 
-ejabberd_tmp_sup_spec(Name, Args) ->
-    {Name,
-     {ejabberd_tmp_sup, start_link, Args},
-     permanent, infinity, supervisor, [ejabberd_tmp_sup]}.
+-spec template_supervisor_spec(atom(), module()) -> supervisor:child_spec().
+template_supervisor_spec(Name, Module) ->
+    #{
+        id => Name,
+        start => {mongoose_template_sup, start_link, [Name, Module]},
+        restart => permanent,
+        shutdown => infinity,
+        type => supervisor,
+        modules => [mongoose_template_sup]
+    }.
 
 supervisor_spec(Mod) ->
     {Mod, {Mod, start_link, []}, permanent, infinity, supervisor, [Mod]}.
@@ -121,7 +126,17 @@ worker_spec(Mod) ->
     worker_spec(Mod, []).
 
 worker_spec(Mod, Args) ->
-    {Mod, {Mod, start_link, Args}, permanent, timer:seconds(5), worker, [Mod]}.
+    %% We use `start_linked_child' wrapper to log delays
+    %% in the slow init worker functions.
+    MFA = {?MODULE, start_linked_child, [Mod, Args]},
+    {Mod, MFA, permanent, timer:seconds(5), worker, [Mod]}.
+
+%% In case one of the workers takes long time to start
+%% we want the logging progress (to know which child got stuck).
+%% This could happend on CI during the node restarts.
+start_linked_child(Mod, Args) ->
+    F = fun() -> erlang:apply(Mod, start_link, Args) end,
+    mongoose_task:run_tracked(#{task => start_linked_child, child_module => Mod}, F).
 
 -spec create_ets_table(atom(), list()) -> ok.
 create_ets_table(TableName, TableOpts) ->

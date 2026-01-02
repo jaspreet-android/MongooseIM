@@ -20,6 +20,9 @@ is_sm_distributed() ->
 is_sm_backend_distributed(ejabberd_sm_mnesia) -> true;
 is_sm_backend_distributed(Other) -> {false, Other}.
 
+db_engine() ->
+    rpc(mim(), mongoose_rdbms, db_engine, [domain_helper:host_type()]).
+
 add_node_to_cluster(Config) ->
     Node2 = mim2(),
     add_node_to_cluster(Node2, Config).
@@ -39,7 +42,7 @@ add_node_to_cluster(Node, Config) ->
     end,
     Config.
 
-add_node_to_mnesia_cluster(Node, Config) ->
+add_node_to_mnesia_cluster(Node, _Config) ->
     ClusterMemberNode = maps:get(node, mim()),
     ok = rpc(Node#{timeout => cluster_op_timeout()},
              mongoose_cluster, join, [ClusterMemberNode]),
@@ -69,14 +72,14 @@ script_path(Node, Config, Script) ->
     filename:join([get_cwd(Node, Config), "bin", Script]).
 
 verify_result(Node, Op) ->
-    mongoose_helper:wait_until(fun() -> catch do_verify_result(Node, Op) end, [],
-                               #{time_left => timer:seconds(20),
-                                 sleep_time => 1000,
-                                 name => verify_result}),
-    mongoose_helper:wait_until(fun() -> check_mongooseim_on_node_started(mim()) end, true,
-                               #{time_left => timer:seconds(20),
-                                 sleep_time => 1000,
-                                 name => verify_mongooseim_started}).
+    wait_helper:wait_until(fun() -> catch do_verify_result(Node, Op) end, [],
+                           #{time_left => timer:seconds(20),
+                             sleep_time => 1000,
+                             name => verify_result}),
+    wait_helper:wait_until(fun() -> check_mongooseim_on_node_started(mim()) end, true,
+                           #{time_left => timer:seconds(20),
+                             sleep_time => 1000,
+                             name => verify_mongooseim_started}).
 
 check_mongooseim_on_node_started(Node) ->
     lists:keymember(mongooseim, 1, rpc(Node, application, which_applications, [])).
@@ -205,3 +208,46 @@ subhost_pattern(SubhostTemplate) ->
 
 lookup_config_opt(Key) ->
     rpc(mim(), mongoose_config, lookup_opt, [Key]).
+
+%% @doc Checks if MongooseIM nodes are running
+validate_nodes() ->
+    validate_nodes(get_node_keys()).
+
+validate_nodes(NodeKeys) ->
+    Results = [validate_node(Node) || Node <- NodeKeys],
+    Errors = [Res || Res <- Results, Res =/= ok],
+    case Errors of
+        [] -> {ok, NodeKeys};
+        _ -> {error, Errors}
+    end.
+
+wait_for_nodes_to_start([]) -> ok;
+wait_for_nodes_to_start(NodeKeys) ->
+    wait_helper:wait_until(fun() -> validate_nodes(NodeKeys) end, {ok, NodeKeys},
+                           #{time_left => timer:seconds(20),
+                             sleep_time => 1000,
+                             name => wait_for_nodes_to_start}).
+
+get_node_keys() ->
+    Keys = [NodeKey || {NodeKey, _Opts} <- ct:get_config(hosts)],
+    case os:getenv("TEST_HOSTS") of
+        false ->
+            Keys;
+        EnvValue -> %% EnvValue examples are "mim" or "mim mim2"
+            BinHosts = binary:split(iolist_to_binary(EnvValue), <<" ">>, [global]),
+            EnvKeys = [binary_to_atom(Node, utf8) || Node <- BinHosts, Node =/= <<>>],
+            %% Check only configured nodes (through test.config)
+            [Key || Key <- EnvKeys, lists:member(Key, Keys)]
+    end.
+
+validate_node(NodeKey) ->
+    Spec = #{node := Node} = rpc_spec(NodeKey),
+    try rpc(Spec, application, which_applications, []) of
+        Loaded ->
+            case lists:keymember(mongooseim, 1, Loaded) of
+                true -> ok;
+                false -> {validate_node_failed, mongooseim_not_running, Node}
+            end
+    catch error:{badrpc, Reason} ->
+        {validate_node_failed, {badrpc, Reason}, Node}
+    end.

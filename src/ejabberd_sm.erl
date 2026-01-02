@@ -60,6 +60,7 @@
          get_raw_sessions/1,
          is_offline/1,
          get_user_present_pids/2,
+         get_user_present_resources_and_pids/1,
          sync/0,
          session_cleanup/1,
          sessions_cleanup/1,
@@ -112,7 +113,7 @@
 -type info() :: #{info_key() => any()}.
 
 -type backend() :: ejabberd_sm_mnesia | ejabberd_sm_redis | ejabberd_sm_cets.
--type close_reason() :: resumed | normal | replaced.
+-type close_reason() :: resumed | normal | {replaced, pid()}.
 -type info_key() :: atom().
 
 -export_type([session/0,
@@ -140,7 +141,7 @@ start() ->
     Spec = {?MODULE, {?MODULE, start_link, []}, permanent, brutal_kill, worker, [?MODULE]},
     {ok, _} = ejabberd_sup:start_child(Spec).
 
--spec start_link() -> 'ignore' | {'error', _} | {'ok', pid()}.
+-spec start_link() -> gen_server:start_ret().
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
@@ -186,14 +187,14 @@ make_new_sid() ->
 
 -spec open_session(HostType, SID, JID, Priority, Info) -> ReplacedPids when
       HostType :: binary(),
-      SID :: 'undefined' | sid(),
+      SID :: sid(),
       JID :: jid:jid(),
       Priority :: integer() | undefined,
       Info :: info(),
       ReplacedPids :: [pid()].
 open_session(HostType, SID, JID, Priority, Info) ->
     set_session(SID, JID, Priority, Info),
-    ReplacedPIDs = check_for_sessions_to_replace(HostType, JID),
+    ReplacedPIDs = check_for_sessions_to_replace(HostType, SID, JID),
     mongoose_instrument:execute(sm_session, #{host_type => HostType},
                                 #{jid => JID, logins => 1, count => 1}),
     mongoose_hooks:sm_register_connection(HostType, SID, JID, Info),
@@ -201,7 +202,7 @@ open_session(HostType, SID, JID, Priority, Info) ->
 
 -spec close_session(Acc, SID, JID, Reason, Info) -> Acc1 when
       Acc :: mongoose_acc:t(),
-      SID :: 'undefined' | sid(),
+      SID :: sid(),
       JID :: jid:jid(),
       Reason :: close_reason(),
       Info :: info(),
@@ -284,7 +285,7 @@ get_raw_sessions(#jid{luser = LUser, lserver = LServer}) ->
 -spec set_presence(Acc, SID, JID, Prio, Presence, Info) -> Acc1 when
       Acc :: mongoose_acc:t(),
       Acc1 :: mongoose_acc:t(),
-      SID :: 'undefined' | sid(),
+      SID :: sid(),
       JID :: jid:jid(),
       Prio :: 'undefined' | integer(),
       Presence :: any(),
@@ -297,7 +298,7 @@ set_presence(Acc, SID, JID, Priority, Presence, Info) ->
 -spec unset_presence(Acc, SID, JID, Status, Info) -> Acc1 when
       Acc :: mongoose_acc:t(),
       Acc1 :: mongoose_acc:t(),
-      SID :: 'undefined' | sid(),
+      SID :: sid(),
       JID :: jid:jid(),
       Status :: binary(),
       Info :: info().
@@ -336,7 +337,7 @@ get_vh_session_list(Server) ->
 -spec get_node_sessions_number() -> non_neg_integer().
 get_node_sessions_number() ->
     Children = supervisor:which_children(mongoose_listener_sup),
-    Listeners = [Ref || {Ref, _, _, [mongoose_c2s_listener]} <- Children],
+    Listeners = [Ref || {Ref, _, _, [mongoose_c2s_listener | _]} <- Children],
     lists:sum([maps:get(active_connections, ranch:info(Ref)) || Ref <- Listeners]).
 
 -spec get_full_session_list() -> [session()].
@@ -585,7 +586,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%--------------------------------------------------------------------
 
 -spec set_session(SID, JID, Prio, Info) -> ok | {error, any()} when
-      SID :: sid() | 'undefined',
+      SID :: sid(),
       JID :: jid:jid(),
       Prio :: priority(),
       Info :: info().
@@ -623,7 +624,8 @@ do_route(Acc, From, To, El) ->
                     do_route_offline(Name, mongoose_acc:stanza_type(Acc),
                                      From, To, Acc, El);
                 Pid when is_pid(Pid) ->
-                    ?LOG_DEBUG(#{what => sm_route_to_pid, session_pid => Pid, acc => Acc}),
+                    ?LOG_DEBUG(#{what => sm_route_to_pid, session_pid => Pid,
+                                 session_node => node(Pid), acc => Acc}),
                     mongoose_c2s:route(Pid, Acc),
                     Acc
             end
@@ -663,7 +665,7 @@ execute_subscription_instrumentation(_HostType, _From, _To, _Type) ->
       Acc :: mongoose_acc:t(),
       Packet :: exml:element().
 do_route_no_resource_presence(<<"subscribe">>, From, To, Acc, Packet) ->
-    Reason = xml:get_path_s(Packet, [{elem, <<"status">>}, cdata]),
+    Reason = exml_query:path(Packet, [{element, <<"status">>}, cdata], <<>>),
     do_route_no_resource_presence_prv(From, To, Acc, Packet, subscribe, Reason);
 do_route_no_resource_presence(<<"subscribed">>, From, To, Acc, Packet) ->
     do_route_no_resource_presence_prv(From, To, Acc, Packet, subscribed, <<>>);
@@ -870,18 +872,19 @@ is_offline(#jid{luser = LUser, lserver = LServer}) ->
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %% @doc On new session, check if some existing connections need to be replace
--spec check_for_sessions_to_replace(HostType, JID) -> ReplacedPids when
+-spec check_for_sessions_to_replace(HostType, SID, JID) -> ReplacedPids when
       HostType :: mongooseim:host_type(),
+      SID :: sid(),
       JID :: jid:jid(),
       ReplacedPids :: [pid()].
-check_for_sessions_to_replace(HostType, JID) ->
+check_for_sessions_to_replace(HostType, {_, NewPid}, JID) ->
     #jid{luser = LUser, lserver = LServer, lresource = LResource} = JID,
     Sessions = ejabberd_sm_backend:get_sessions(LUser, LServer),
     %% TODO: Depending on how this is executed, there could be an unneeded
     %% replacement for max_sessions. We need to check this at some point.
     ReplacedRedundantSessions = check_existing_resources(LResource, Sessions),
     AllReplacedSessionPids = check_max_sessions(HostType, LUser, LServer, ReplacedRedundantSessions, Sessions),
-    [mongoose_c2s:exit(Pid, <<"Replaced by new connection">>) || Pid <- AllReplacedSessionPids],
+    [mongoose_c2s:exit(Pid, {replaced, NewPid}) || Pid <- AllReplacedSessionPids],
     AllReplacedSessionPids.
 
 -spec check_existing_resources(LResource, Sessions) ->

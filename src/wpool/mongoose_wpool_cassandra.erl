@@ -13,7 +13,7 @@
 %% mongoose_wpool callbacks
 -spec init() -> ok.
 init() ->
-    {ok, []} = application:ensure_all_started(cqerl),
+    {ok, _} = application:ensure_all_started([cqerl], permanent),
     application:set_env(cqerl, maps, true).
 
 -spec start(mongooseim:host_type_or_global(), mongoose_wpool:tag(),
@@ -58,7 +58,7 @@ cqerl_opts(auth, #{auth := #{plain := #{username := UserName, password := Passwo
 cqerl_opts(tcp, #{}) ->
     [{tcp_opts, [{keepalive, true}]}]; % always set
 cqerl_opts(tls, #{tls := TLSOpts}) ->
-    [{ssl, just_tls:make_ssl_opts(TLSOpts)}];
+    [{ssl, just_tls:make_client_opts(TLSOpts)}];
 cqerl_opts(_Opt, #{}) ->
     [].
 

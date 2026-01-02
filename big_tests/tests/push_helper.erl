@@ -12,20 +12,16 @@ ns_pubsub_pub_options() -> <<"http://jabber.org/protocol/pubsub#publish-options"
 push_form_type()-> <<"urn:xmpp:push:summary">>.
 
 disable_stanza(JID, undefined) ->
-    disable_stanza([
-                    {<<"xmlns">>, <<"urn:xmpp:push:0">>},
-                    {<<"jid">>, JID}
-                   ]);
+    disable_stanza(#{<<"xmlns">> => <<"urn:xmpp:push:0">>,
+                     <<"jid">> => JID});
 disable_stanza(JID, Node) ->
-    disable_stanza([
-                    {<<"xmlns">>, <<"urn:xmpp:push:0">>},
-                    {<<"jid">>, JID},
-                    {<<"node">>, Node}
-                   ]).
+    disable_stanza(#{<<"xmlns">> => <<"urn:xmpp:push:0">>,
+                     <<"jid">> => JID,
+                     <<"node">> => Node}).
 
 disable_stanza(JID) when is_binary(JID) ->
     disable_stanza(JID, undefined);
-disable_stanza(Attrs) when is_list(Attrs) ->
+disable_stanza(Attrs) when is_map(Attrs) ->
     escalus_stanza:iq(<<"set">>, [#xmlel{name = <<"disable">>, attrs = Attrs}]).
 
 enable_stanza(JID, Node) ->
@@ -33,11 +29,11 @@ enable_stanza(JID, Node) ->
 enable_stanza(JID, Node, FormFields) ->
     enable_stanza(JID, Node, FormFields, ns_pubsub_pub_options()).
 enable_stanza(JID, Node, FormFields, FormType) ->
-    escalus_stanza:iq(<<"set">>, [#xmlel{name = <<"enable">>, attrs = [
-        {<<"xmlns">>, <<"urn:xmpp:push:0">>},
-        {<<"jid">>, JID},
-        {<<"node">>, Node}
-    ], children = maybe_form(FormFields, FormType)}]).
+    escalus_stanza:iq(<<"set">>, [#xmlel{name = <<"enable">>, attrs = #{
+        <<"xmlns">> => <<"urn:xmpp:push:0">>,
+        <<"jid">> => JID,
+        <<"node">> => Node
+    }, children = maybe_form(FormFields, FormType)}]).
 
 maybe_form(undefined, _FormType) ->
     [];
@@ -74,13 +70,13 @@ is_online(LUser, LServer, LRes) ->
     end.
 
 wait_for_user_online(Client) ->
-    mongoose_helper:wait_until(fun() ->
-                                       is_online(escalus_utils:jid_to_lower(escalus_client:username(Client)),
-                                                 escalus_utils:jid_to_lower(escalus_client:server(Client)),
-                                                 escalus_utils:jid_to_lower(escalus_client:resource(Client)))
-                               end,
-                               true,
-                               #{sleep_time => 500, time_left => timer:seconds(20), name => is_online}).
+    wait_helper:wait_until(fun() ->
+                                   is_online(escalus_utils:jid_to_lower(escalus_client:username(Client)),
+                                             escalus_utils:jid_to_lower(escalus_client:server(Client)),
+                                             escalus_utils:jid_to_lower(escalus_client:resource(Client)))
+                           end,
+                           true,
+                           #{sleep_time => 500, time_left => timer:seconds(20), name => is_online}).
 
 is_offline(LUser, LServer, LRes) ->
     JID = mongoose_helper:make_jid_noprep(LUser, LServer, LRes),
@@ -100,10 +96,10 @@ wait_for_user_offline(Client) ->
     U = escalus_utils:jid_to_lower(escalus_client:username(Client)),
     S = escalus_utils:jid_to_lower(escalus_client:server(Client)),
     R = escalus_utils:jid_to_lower(escalus_client:resource(Client)),
-    mongoose_helper:wait_until(fun() -> is_offline(U, S, R) end,
-                               true,
-                               #{time_left => timer:seconds(20), name => wait_for_user_offline,
-                                 on_error => fun() -> get_raw_sessions(U, S) end}).
+    wait_helper:wait_until(fun() -> is_offline(U, S, R) end,
+                           true,
+                           #{time_left => timer:seconds(20), name => wait_for_user_offline,
+                             on_error => fun() -> get_raw_sessions(U, S) end}).
 
 
 http_notifications_port() ->

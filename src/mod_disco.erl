@@ -129,7 +129,7 @@ process_local_iq_items(Acc, _From, _To, #iq{type = set, sub_el = SubEl} = IQ, _E
     {Acc, IQ#iq{type = error, sub_el = [SubEl, mongoose_xmpp_errors:not_allowed()]}};
 process_local_iq_items(Acc, From, To, #iq{type = get, lang = Lang, sub_el = SubEl} = IQ, _Extra) ->
     HostType = mongoose_acc:host_type(Acc),
-    Node = xml:get_tag_attr_s(<<"node">>, SubEl),
+    Node = exml_query:attr(SubEl, <<"node">>, <<>>),
     case mongoose_disco:get_local_items(HostType, From, To, Node, Lang) of
         empty ->
             Error = mongoose_xmpp_errors:item_not_found(),
@@ -144,7 +144,7 @@ process_local_iq_info(Acc, _From, _To, #iq{type = set, sub_el = SubEl} = IQ, _Ex
     {Acc, IQ#iq{type = error, sub_el = [SubEl, mongoose_xmpp_errors:not_allowed()]}};
 process_local_iq_info(Acc, From, To, #iq{type = get, lang = Lang, sub_el = SubEl} = IQ, _Extra) ->
     HostType = mongoose_acc:host_type(Acc),
-    Node = xml:get_tag_attr_s(<<"node">>, SubEl),
+    Node = exml_query:attr(SubEl, <<"node">>, <<>>),
     case mongoose_disco:get_local_features(HostType, From, To, Node, Lang) of
         empty ->
             Error = mongoose_xmpp_errors:item_not_found(),
@@ -163,7 +163,7 @@ process_sm_iq_items(Acc, From, To, #iq{type = get, lang = Lang, sub_el = SubEl} 
     case is_presence_subscribed(From, To) of
         true ->
             HostType = mongoose_acc:host_type(Acc),
-            Node = xml:get_tag_attr_s(<<"node">>, SubEl),
+            Node = exml_query:attr(SubEl, <<"node">>, <<>>),
             case mongoose_disco:get_sm_items(HostType, From, To, Node, Lang) of
                 empty ->
                     Error = sm_error(From, To),
@@ -183,7 +183,7 @@ process_sm_iq_info(Acc, From, To, #iq{type = get, lang = Lang, sub_el = SubEl} =
     case is_presence_subscribed(From, To) of
         true ->
             HostType = mongoose_acc:host_type(Acc),
-            Node = xml:get_tag_attr_s(<<"node">>, SubEl),
+            Node = exml_query:attr(SubEl, <<"node">>, <<>>),
             case mongoose_disco:get_sm_features(HostType, From, To, Node, Lang) of
                 empty ->
                     Error = sm_error(From, To),
@@ -228,7 +228,7 @@ disco_sm_identity(Acc = #{to_jid := JID}, _, _) ->
 disco_local_items(Acc = #{host_type := HostType, from_jid := From, to_jid := To, node := <<>>}, _, _) ->
     ReturnHidden = should_return_hidden(HostType, From),
     Subdomains = get_subdomains(To#jid.lserver),
-    Components = get_external_components(To#jid.lserver, ReturnHidden),
+    Components = get_external_components(ReturnHidden),
     ExtraDomains = get_extra_domains(HostType),
     Domains = Subdomains ++ Components ++ ExtraDomains,
     {ok, mongoose_disco:add_items([#{jid => Domain} || Domain <- Domains], Acc)};
@@ -284,33 +284,13 @@ should_return_hidden(HostType, _From) ->
     end.
 
 -spec get_subdomains(jid:lserver()) -> [jid:lserver()].
-get_subdomains(Domain) ->
+get_subdomains(LServer) ->
     [maps:get(subdomain, SubdomainInfo) ||
-        SubdomainInfo <- mongoose_domain_api:get_all_subdomains_for_domain(Domain)].
+        SubdomainInfo <- mongoose_domain_api:get_all_subdomains_for_domain(LServer)].
 
-%% TODO: This code can be removed when components register subdomains in the domain API.
-%% Until then, it works only for static domains.
--spec get_external_components(jid:server(), return_hidden()) -> [jid:lserver()].
-get_external_components(Domain, ReturnHidden) ->
-    StaticDomains = lists:sort(fun(H1, H2) -> size(H1) >= size(H2) end, ?MYHOSTS),
-    lists:filter(
-      fun(Component) ->
-              check_if_host_is_the_shortest_suffix_for_route(Component, Domain, StaticDomains)
-      end, mongoose_component:dirty_get_all_components(ReturnHidden)).
-
--spec check_if_host_is_the_shortest_suffix_for_route(
-        Route :: jid:lserver(), Host :: jid:lserver(), VHosts :: [jid:lserver()]) -> boolean().
-check_if_host_is_the_shortest_suffix_for_route(Route, Host, VHosts) ->
-    RouteS = binary_to_list(Route),
-    case lists:dropwhile(
-           fun(VH) ->
-                   not lists:suffix("." ++ binary_to_list(VH), RouteS)
-           end, VHosts) of
-        [] ->
-            false;
-        [VH | _] ->
-            VH == Host
-    end.
+-spec get_external_components(return_hidden()) -> [jid:lserver()].
+get_external_components(ReturnHidden) ->
+    mongoose_component:dirty_get_all_components(ReturnHidden).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
@@ -350,15 +330,15 @@ get_user_resources(JID = #jid{luser = LUser}) ->
 
 -spec make_iq_result(jlib:iq(), binary(), binary(), [exml:element()]) -> jlib:iq().
 make_iq_result(IQ, NameSpace, Node, ChildrenXML) ->
+    Attrs = make_node_attrs(Node),
     IQ#iq{type = result,
           sub_el = [#xmlel{name = <<"query">>,
-                           attrs = [{<<"xmlns">>, NameSpace} | make_node_attrs(Node)],
-                           children = ChildrenXML
-                          }]}.
+                           attrs = Attrs#{<<"xmlns">> => NameSpace},
+                           children = ChildrenXML}]}.
 
--spec make_node_attrs(Node :: binary()) -> [{binary(), binary()}].
-make_node_attrs(<<>>) -> [];
-make_node_attrs(Node) -> [{<<"node">>, Node}].
+-spec make_node_attrs(Node :: binary()) -> exml:attrs().
+make_node_attrs(<<>>) -> #{};
+make_node_attrs(Node) -> #{<<"node">> => Node}.
 
 -spec server_info_to_field(server_info()) -> mongoose_disco:info_field().
 server_info_to_field(#{name := Name, urls := URLs}) ->

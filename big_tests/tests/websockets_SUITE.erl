@@ -23,6 +23,7 @@
 -import(distributed_helper, [mim/0,
                              require_rpc_nodes/1,
                              rpc/4]).
+-import(domain_helper, [host_type/0]).
 
 %%--------------------------------------------------------------------
 %% Suite configuration
@@ -44,7 +45,8 @@ test_cases() ->
     [chat_msg,
      escape_chat_msg,
      escape_attrs,
-     too_big_stanza_is_rejected].
+     too_big_stanza_is_rejected,
+     invalid_xmpp_version_is_rejected].
 
 suite() ->
     require_rpc_nodes([mim]) ++ escalus:suite().
@@ -54,7 +56,7 @@ suite() ->
 %%--------------------------------------------------------------------
 
 init_per_suite(Config) ->
-    instrument_helper:start(instrumentation_events(), negative_instrumentation_events()),
+    instrument_helper:start(instrumentation_events()),
     Config1 = escalus:init_per_suite(Config),
     Config2 = setup_listeners(Config1),
     escalus:create_users(Config2, escalus:get_users([alice, geralt, geralt_s, carol])).
@@ -116,8 +118,6 @@ metrics_test(Config) ->
                                                    (#{time := Time}) -> Time > 0 end)
          || {Event, Label} <- instrumentation_events()],
 
-        %% Verify C2S listener is not used
-        instrument_helper:assert_not_emitted(negative_instrumentation_events()),
         ok
         end).
 
@@ -125,13 +125,22 @@ too_big_stanza_is_rejected(Config) ->
     escalus:story(
       Config, [{alice, 1}, {?config(user, Config), 1}],
       fun(Alice, Geralt) ->
-              BigBody = base16:encode(crypto:strong_rand_bytes(?MAX_STANZA_SIZE)),
+              BigBody = binary:encode_hex(crypto:strong_rand_bytes(?MAX_STANZA_SIZE)),
               escalus_client:send(Geralt, escalus_stanza:chat_to(Alice, BigBody)),
               escalus:assert(is_stream_error, [<<"policy-violation">>, <<>>], escalus_client:wait_for_stanza(Geralt)),
               escalus:assert(is_stream_end, escalus_client:wait_for_stanza(Geralt)),
               true = escalus_connection:wait_for_close(Geralt, timer:seconds(1)),
               escalus_assert:has_no_stanzas(Alice)
       end).
+
+invalid_xmpp_version_is_rejected(Config) ->
+    Spec0 = escalus_users:get_userspec(Config, ?config(user, Config)),
+    Spec = [{stream_attrs, #{<<"version">> => <<"1.23456">>}} | Spec0],
+    {ok, Conn, _} = escalus_connection:start(Spec, [{?MODULE, open_stream}]),
+    [Start, Error, End] = escalus:wait_for_stanzas(Conn, 3),
+    escalus:assert(is_stream_start, Start),
+    escalus:assert(is_stream_error, [<<"unsupported-version">>, <<>>], Error),
+    escalus:assert(is_stream_end, End).
 
 chat_msg(Config) ->
     escalus:story(Config, [{alice, 1}, {?config(user, Config), 1}, {carol, 1}],
@@ -170,14 +179,10 @@ escape_attrs(Config) ->
 
 instrumentation_events() ->
     instrument_helper:declared_events(mod_websockets, [])
-    ++ instrument_helper:declared_events(mongoose_c2s, [global])
-    ++ [{c2s_message_processed, #{host_type => domain_helper:host_type()}}].
+    ++ [{c2s_message_processed, #{host_type => host_type()}},
+        {xmpp_element_out, #{host_type => host_type(), connection_type => c2s}},
+        {xmpp_element_in, #{host_type => host_type(), connection_type => c2s}}].
 
-negative_instrumentation_events() ->
-    [{Name, #{}} || Name <- negative_instrumentation_events_names()].
-
-negative_instrumentation_events_names() ->
-    [c2s_tcp_data_out,
-     c2s_tcp_data_in,
-     c2s_tls_data_out,
-     c2s_tls_data_in].
+open_stream(Conn = #client{module = Module, props = Props}, UnusedFeatures) ->
+    escalus:send(Conn, Module:stream_start_req(Props)),
+    {Conn, UnusedFeatures}.

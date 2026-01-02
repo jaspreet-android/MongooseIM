@@ -291,7 +291,7 @@ token_removed_on_user_removal(Config) ->
         end,
     escalus:story(Config, [{bob, 1}], S),
     %% then token database doesn't contain user's tokens (cleanup is done after IQ result)
-    mongoose_helper:wait_until(fun() -> get_users_token(Config, bob) end, {selected, []}).
+    wait_helper:wait_until(fun() -> get_users_token(Config, bob) end, {selected, []}).
 
 provision_token_login(Config) ->
     %% given
@@ -389,7 +389,7 @@ is_xmpp_registration_available(Domain) ->
 user_authenticating_with_token(Config, UserName, Token) ->
     Spec1 = lists:keystore(oauth_token, 1, escalus_users:get_userspec(Config, UserName),
                            {oauth_token, Token}),
-    lists:keystore(auth, 1, Spec1, {auth, {escalus_auth, auth_sasl_oauth}}).
+    lists:keystore(auth, 1, Spec1, {auth, fun escalus_auth:auth_sasl_oauth/2}).
 
 extract_bound_jid(BindReply) ->
     exml_query:path(BindReply, [{element, <<"bind">>}, {element, <<"jid">>},
@@ -435,7 +435,7 @@ serialize(ServerSideToken) ->
     end.
 
 to_lower(B) when is_binary(B) ->
-    list_to_binary(string:to_lower(binary_to_list(B))).
+    string:lowercase(B).
 
 required_modules() ->
     KeyOpts = #{backend => ct_helper:get_internal_database(),

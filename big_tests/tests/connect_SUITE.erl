@@ -29,7 +29,8 @@
      || (E) =/= (V)])).
 -define(SECURE_USER, secure_joe).
 -define(CACERT_FILE, "priv/ssl/cacert.pem").
--define(CERT_FILE, "priv/ssl/fake_server.pem").
+-define(CERT_FILE, "priv/ssl/fake_cert.pem").
+-define(KEY_FILE, "priv/ssl/fake_key.pem").
 -define(DH_FILE, "priv/ssl/fake_dh_server.pem").
 
 -import(distributed_helper, [mim/0,
@@ -38,7 +39,6 @@
                              require_rpc_nodes/1,
                              rpc/4]).
 -import(domain_helper, [domain/0]).
--import(config_parser_helper, [default_c2s_tls/1]).
 
 %%--------------------------------------------------------------------
 %% Suite configuration
@@ -50,8 +50,8 @@ all() ->
         {group, security},
         {group, incorrect_behaviors},
         {group, proxy_protocol},
+        {group, disconnect},
         %% these groups must be last, as they really... complicate configuration
-        {group, fast_tls},
         {group, just_tls}
     ].
 
@@ -62,6 +62,7 @@ groups() ->
         {starttls_optional, [parallel], [bad_xml,
                                          invalid_host,
                                          invalid_stream_namespace,
+                                         invalid_stream_version,
                                          deny_pre_xmpp_1_0_stream,
                                          correct_features_are_advertised_for_optional_starttls]},
         {starttls_required, [], [{group, starttls_required_parallel}, metrics_test]},
@@ -74,12 +75,13 @@ groups() ->
                                                  | protocol_test_cases()]},
         {tls, [parallel], auth_bind_pipelined_cases() ++
                           protocol_test_cases() ++
-                          cipher_test_cases()},
-        {verify_peer, [], [verify_peer_disconnects_when_client_has_no_cert,
+                          cipher_test_cases() ++ [should_fail_without_tls]},
+        {verify_peer, [], [use_system_certs_when_no_cacertfile,
+                           verify_peer_disconnects_when_client_has_no_cert,
                            verify_peer_ignores_when_client_has_no_cert]},
         {just_tls, [{group, verify_peer} | tls_groups()]},
-        {fast_tls, tls_groups()},
         {session_replacement, [], [same_resource_replaces_session,
+                                   same_resource_replaces_session_with_colon,
                                    clean_close_of_replaced_session,
                                    replaced_session_cannot_terminate,
                                    replaced_session_cannot_terminate_different_nodes]},
@@ -88,6 +90,7 @@ groups() ->
         {incorrect_behaviors, [parallel], [close_connection_if_start_stream_duplicated,
                                            close_connection_if_protocol_violation_after_authentication,
                                            close_connection_if_protocol_violation_after_binding]},
+        {disconnect, [], [disconnect_inactive_tcp_connection_after_timeout]},
         {proxy_protocol, [parallel], [cannot_connect_without_proxy_header,
                                       connect_with_proxy_header]}
     ].
@@ -120,7 +123,7 @@ cipher_test_cases() ->
         clients_can_connect_with_advertised_ciphers,
         % String cipher
         'clients_can_connect_with_ECDHE-RSA-AES256-GCM-SHA384',
-        %% MIM2 accepts ECDHE-RSA-AES256-GCM-SHA384 exclusively with fast_tls on alternative port
+        %% MIM2 accepts ECDHE-RSA-AES256-GCM-SHA384 exclusively on alternative port
         %% MIM3 accepts #{cipher => aes_256_gcm, key_exchange => ecdhe_rsa, mac => aead, prf => sha384}
         %%      exclusively with just_tls on alternative port
         'clients_can_connect_with_ECDHE-RSA-AES256-GCM-SHA384_only'
@@ -135,6 +138,7 @@ suite() ->
 
 init_per_suite(Config) ->
     instrument_helper:start(instrumentation_events()),
+    logger_ct_backend:start(),
     Config0 = escalus:init_per_suite([{escalus_user_db, {module, escalus_ejabberd, []}} | Config]),
     C2SPort = ct:get_config({hosts, mim, c2s_port}),
     [C2SListener] = mongoose_helper:get_listeners(mim(), #{port => C2SPort, module => mongoose_c2s_listener}),
@@ -144,6 +148,7 @@ init_per_suite(Config) ->
 
 end_per_suite(Config) ->
     instrument_helper:stop(),
+    logger_ct_backend:stop(),
     escalus_fresh:clean(),
     escalus:delete_users(Config, escalus:get_users([?SECURE_USER, alice])),
     restore_c2s_listener(Config),
@@ -154,7 +159,6 @@ init_per_group(starttls_optional, Config) ->
     Config;
 init_per_group(session_replacement, Config) ->
     configure_c2s_listener(Config, #{tls => tls_opts(starttls, Config)}),
-    logger_ct_backend:start(),
     Config;
 init_per_group(starttls_required, Config) ->
     configure_c2s_listener(Config, #{tls => tls_opts(starttls_required, Config)}),
@@ -172,19 +176,19 @@ init_per_group(tls, Config) ->
     [{c2s_port, ct:get_config({hosts, mim, c2s_port})} | Config2];
 init_per_group(just_tls, Config)->
     [{tls_module, just_tls} | Config];
-init_per_group(fast_tls, Config)->
-    [{tls_module, fast_tls} | Config];
 init_per_group(proxy_protocol, Config) ->
     configure_c2s_listener(Config, #{proxy_protocol => true}),
+    Config;
+init_per_group(disconnect, Config) ->
+    configure_c2s_listener(Config, #{state_timeout => 100}),
+    Config;
+init_per_group(verify_peer, Config) ->
     Config;
 init_per_group(_, Config) ->
     Config.
 
-end_per_group(session_replacement, Config) ->
-    logger_ct_backend:stop(),
-    Config;
-end_per_group(_, Config) ->
-    Config.
+end_per_group(_, _Config) ->
+    ok.
 
 init_per_testcase(close_connection_if_service_type_is_hidden = CN, Config) ->
     Config1 = mongoose_helper:backup_and_set_config_option(Config, hide_service_name, true),
@@ -221,7 +225,24 @@ end_per_testcase(CaseName, Config) ->
 %% Tests
 %%--------------------------------------------------------------------
 
+use_system_certs_when_no_cacertfile(Config) ->
+    Opts0 = tls_opts(starttls_required, Config),
+    Opts = maps:remove(cacertfile, Opts0#{verify_mode => peer}),
+    ?assertNot(maps:is_key(cacerts, Opts)),
+    ?assertNot(maps:is_key(cacertfile, Opts)),
+    ServerOpts = rpc(mim(), just_tls, make_server_opts, [Opts]),
+    ?assertMatch({verify, verify_peer}, lists:keyfind(verify, 1, ServerOpts)),
+    ?assertMatch({cacerts, _}, lists:keyfind(cacerts, 1, ServerOpts)),
+    %% Remove server options
+    Opts1 = maps:without([certfile, keyfile, dhfile], Opts),
+    ClientOpts = rpc(mim(), just_tls, make_client_opts, [Opts1]),
+    ?assertMatch({verify, verify_peer}, lists:keyfind(verify, 1, ClientOpts)),
+    ?assertMatch({cacerts, _}, lists:keyfind(cacerts, 1, ClientOpts)),
+    ok = ssl:start(),
+    ?assertMatch({ok, _}, ssl:connect("google.com", 443, ClientOpts)).
+
 verify_peer_disconnects_when_client_has_no_cert(Config) ->
+    logger_ct_backend:capture(error),
     %% Server disconnects only when `disconnect_on_failure` is set to `true`.
     %% It is true by default, so we make sure `disconnect_on_failure` is not in config.
     %% `verify_mode` needs to be set to `peer`.
@@ -240,7 +261,10 @@ verify_peer_disconnects_when_client_has_no_cert(Config) ->
     catch
         C:E ->
             error({C, E, Config})
-    end.
+    after
+        logger_ct_backend:stop_capture()
+    end,
+    ?assertEqual([], logger_ct_backend:recv(fun(_, _Msg) -> true end)).
 
 verify_peer_ignores_when_client_has_no_cert(Config) ->
     %% Server bypasses TLS client cert verification when `disconnect_on_failure` is set to `false`.
@@ -287,25 +311,39 @@ invalid_host(Config) ->
 
 invalid_stream_namespace(Config) ->
     %% given
-    Spec = escalus_users:get_userspec(Config, alice),
+    Spec0 = escalus_users:get_userspec(Config, alice),
+    Spec = [{stream_attrs, #{<<"xmlns:stream">> => <<"obviously-invalid-namespace">>}} | Spec0],
     %% when
-    [Start, Error, End] = connect_with_invalid_stream_namespace(Spec),
+    {ok, Conn, _} = escalus_connection:start(Spec, [{?MODULE, start_stream}]),
+    [Start, Error, End] = escalus:wait_for_stanzas(Conn, 3),
     %% then
     escalus:assert(is_stream_start, Start),
     escalus:assert(is_stream_error, [<<"invalid-namespace">>, <<>>], Error),
     escalus:assert(is_stream_end, End).
 
+invalid_stream_version(Config) ->
+    %% given
+    Spec0 = escalus_users:get_userspec(Config, alice),
+    Spec = [{stream_attrs, #{<<"version">> => <<"1.23456">>}} | Spec0],
+    %% when
+    {ok, Conn, _} = escalus_connection:start(Spec, [{?MODULE, start_stream}]),
+    [Start, Error, End] = escalus:wait_for_stanzas(Conn, 3),
+    %% then
+    escalus:assert(is_stream_start, Start),
+    escalus:assert(is_stream_error, [<<"unsupported-version">>, <<>>], Error),
+    escalus:assert(is_stream_end, End).
+
 deny_pre_xmpp_1_0_stream(Config) ->
     %% given
-    Spec = escalus_fresh:freshen_spec(Config, alice),
-    Steps = [
-             %% when
-             {?MODULE, start_stream_pre_xmpp_1_0}
-            ],
-    {ok, Conn, _} = escalus_connection:start(Spec, Steps),
-    StreamError = escalus:wait_for_stanza(Conn),
-    escalus:assert(is_stream_error, [<<"unsupported-version">>, <<>>], StreamError),
-    escalus_connection:stop(Conn).
+    Spec0 = escalus_users:get_userspec(Config, alice),
+    Spec = [{stream_attrs, #{<<"version">> => undefined}} | Spec0],
+    %% when
+    {ok, Conn, _} = escalus_connection:start(Spec, [{?MODULE, start_stream}]),
+    [Start, Error, End] = escalus:wait_for_stanzas(Conn, 3),
+    %% then
+    escalus:assert(is_stream_start, Start),
+    escalus:assert(is_stream_error, [<<"unsupported-version">>, <<>>], Error),
+    escalus:assert(is_stream_end, End).
 
 should_fail_with_sslv3(Config) ->
     should_fail_with(Config, sslv3).
@@ -317,6 +355,7 @@ should_fail_with_tlsv1_1(Config) ->
     should_fail_with(Config, 'tlsv1.1').
 
 should_fail_with(Config, Protocol) ->
+    logger_ct_backend:capture(error),
     %% Connection process is spawned with a link so besides the crash itself,
     %%   we will receive an exit signal. We don't want to terminate the test due to this.
     %% TODO: Investigate if this behaviour is not a ticking bomb which may affect other test cases.
@@ -332,7 +371,28 @@ should_fail_with(Config, Protocol) ->
     catch
         _C:_R ->
             ok
-    end.
+    after
+        logger_ct_backend:stop_capture()
+    end,
+    ?assertEqual([], logger_ct_backend:recv(fun(_, _Msg) -> true end)).
+
+should_fail_without_tls(Config) ->
+    logger_ct_backend:capture(error),
+    process_flag(trap_exit, true),
+
+    %% WHEN a non-TLS user connects to a TLS listener
+    UserSpec0 = escalus_fresh:create_fresh_user(Config, alice),
+    Port = ct:get_config({hosts, mim, c2s_tls_port}),
+    UserSpec = [{port, Port} | UserSpec0],
+    {ok, Client, _} = escalus_connection:start(UserSpec, [{?MODULE, start_stream}]),
+
+    %% THEN the server should close the connection without logging an error
+    try
+        true = escalus_connection:wait_for_close(Client, timer:seconds(1))
+    after
+        logger_ct_backend:stop_capture()
+    end,
+    ?assertEqual([], logger_ct_backend:recv(fun(_, _Msg) -> true end)).
 
 should_pass_with_tlsv1_2(Config) ->
     UserSpec0 = escalus_fresh:create_fresh_user(Config, ?SECURE_USER),
@@ -372,10 +432,7 @@ clients_can_connect_with_advertised_ciphers(Config) ->
                          ciphers_working_with_ssl_clients(Config))).
 
 'clients_can_connect_with_ECDHE-RSA-AES256-GCM-SHA384_only'(Config) ->
-    Port = case ?config(tls_module, Config) of
-               just_tls -> ct:get_config({hosts, mim3, c2s_tls_port});
-               fast_tls -> ct:get_config({hosts, mim2, c2s_tls_port})
-           end,
+    Port = ct:get_config({hosts, mim3, c2s_tls_port}),
     Config1 = [{c2s_port, Port} | Config],
     CiphersStr = os:cmd("openssl ciphers 'ECDHE-RSA-AES256-GCM-SHA384'"),
     ct:pal("Available cipher suites for : ~s", [CiphersStr]),
@@ -506,7 +563,7 @@ auth_bind_pipelined_auth_failure(Config) ->
 
     %% Auth response
     AuthResponse = escalus_connection:get_stanza(Conn, auth_response),
-    ?assertMatch(#xmlel{name = <<"failure">>, attrs = [{<<"xmlns">>, ?NS_SASL}]}, AuthResponse).
+    ?assertMatch(#xmlel{name = <<"failure">>, attrs = #{<<"xmlns">> := ?NS_SASL}}, AuthResponse).
 
 auth_bind_pipelined_starttls_skipped_error(Config) ->
     UserSpec = [{parser_opts, [{start_tag, <<"stream:stream">>}]}
@@ -542,7 +599,22 @@ same_resource_replaces_session(Config) ->
     ConflictError = escalus:wait_for_stanza(Alice1),
     escalus:assert(is_stream_error, [<<"conflict">>, <<>>], ConflictError),
 
-    mongoose_helper:wait_until(fun() -> escalus_connection:is_connected(Alice1) end, false),
+    wait_helper:wait_until(fun() -> escalus_connection:is_connected(Alice1) end, false),
+
+    escalus_connection:stop(Alice2).
+
+%% Test that resources containing colons work correctly with session management.
+%% This is a regression test for https://github.com/esl/MongooseIM/issues/868
+same_resource_replaces_session_with_colon(Config) ->
+    UserSpec = [{resource, <<"device:with:colons">>} | escalus_users:get_userspec(Config, alice)],
+    {ok, Alice1, _} = escalus_connection:start(UserSpec),
+
+    {ok, Alice2, _} = escalus_connection:start(UserSpec),
+
+    ConflictError = escalus:wait_for_stanza(Alice1),
+    escalus:assert(is_stream_error, [<<"conflict">>, <<>>], ConflictError),
+
+    wait_helper:wait_until(fun() -> escalus_connection:is_connected(Alice1) end, false),
 
     escalus_connection:stop(Alice2).
 
@@ -572,7 +644,7 @@ replaced_session_cannot_terminate(Config) ->
     FilterFun = fun(_, Msg) ->
                         re:run(Msg, "replaced_wait_timeout") /= nomatch
                 end,
-    mongoose_helper:wait_until(
+    wait_helper:wait_until(
       fun() -> length(logger_ct_backend:recv(FilterFun)) end, 1),
 
     rpc(mim(), sys, resume, [C2SPid]),
@@ -596,7 +668,7 @@ replaced_session_cannot_terminate_different_nodes(Config) ->
     FilterFun = fun(_, Msg) ->
                         re:run(Msg, "replaced_wait_timeout") /= nomatch
                 end,
-    mongoose_helper:wait_until(
+    wait_helper:wait_until(
       fun() -> length(logger_ct_backend:recv(FilterFun)) end, 1),
 
     rpc(mim(), sys, resume, [C2SPid]),
@@ -648,12 +720,21 @@ close_connection_if_protocol_violation_after_binding(Config) ->
 close_connection_if_protocol_violation(Config, Steps) ->
     AliceSpec = escalus_fresh:create_fresh_user(Config, alice),
     {ok, Alice, _Features} = escalus_connection:start(AliceSpec, Steps),
-    escalus:send(Alice, escalus_stanza:stream_start(domain(), ?NS_JABBER_CLIENT)),
+    escalus:send(Alice, escalus_stanza:stream_start(domain())),
     escalus:assert(is_stream_error, [<<"policy-violation">>, <<>>],
                    escalus_connection:get_stanza(Alice, no_stream_error_stanza_received)),
     escalus:assert(is_stream_end,
                    escalus_connection:get_stanza(Alice, no_stream_end_stanza_received)),
     true = escalus_connection:wait_for_close(Alice,timer:seconds(5)).
+
+disconnect_inactive_tcp_connection_after_timeout(Config) ->
+    UserSpec = escalus_users:get_userspec(Config, alice),
+    % connect w/o sending any XMPP data
+    Conn = escalus_connection:connect(UserSpec),
+    [Start, Error, _End] = escalus:wait_for_stanzas(Conn, 3),
+    escalus:assert(is_stream_error, [<<"connection-timeout">>, <<>>], Error),
+    escalus:assert(is_stream_start, Start),
+    escalus_connection:stop(Conn).
 
 cannot_connect_with_proxy_header(Config) ->
     %% GIVEN proxy protocol is disabled
@@ -725,14 +806,16 @@ ciphers_working_with_ssl_clients(Config) ->
     Port = c2s_port(Config),
     Path = rpc(get_node(Port), os, getenv, ["PWD"]),
     CertPath = Path ++ "/" ++ ?CERT_FILE,
+    KeyPath = Path ++ "/" ++ ?KEY_FILE,
     lists:filter(fun(Cipher) ->
-                         openssl_client_can_use_cipher(Cipher, Port, CertPath)
+                         openssl_client_can_use_cipher(Cipher, Port, CertPath, KeyPath)
                  end, ciphers_available_in_os()).
 
-openssl_client_can_use_cipher(Cipher, Port, Path) ->
+openssl_client_can_use_cipher(Cipher, Port, CertPath, KeyPath) ->
     PortStr = integer_to_list(Port),
     Cmd = "echo '' | openssl s_client -connect localhost:" ++ PortStr ++
-          " -cert \"" ++ Path ++ "\""
+          " -cert \"" ++ CertPath ++ "\""
+          " -key \"" ++ KeyPath ++ "\""
           " -cipher \"" ++ Cipher ++ "\" -tls1_2 2>&1",
     Output = os:cmd(Cmd),
     0 == string:str(Output, ":error:") andalso 0 == string:str(Output, "errno=0").
@@ -756,9 +839,9 @@ configure_c2s_listener(Config, ExtraC2SOpts, RemovedC2SKeys) ->
 
 tls_opts(Mode, Config) ->
     ExtraOpts = #{mode => Mode, verify_mode => none,
-                  cacertfile => ?CACERT_FILE, certfile => ?CERT_FILE, dhfile => ?DH_FILE},
-    Module = proplists:get_value(tls_module, Config, fast_tls),
-    maps:merge(default_c2s_tls(Module), ExtraOpts).
+                  cacertfile => ?CACERT_FILE, certfile => ?CERT_FILE, keyfile => ?KEY_FILE,
+                  dhfile => ?DH_FILE},
+    maps:merge(config_parser_helper:default_xmpp_tls(), ExtraOpts).
 
 set_secure_connection_protocol(UserSpec, Version) ->
     [{ssl_opts, [{versions, [Version]}, {verify, verify_none}]} | UserSpec].
@@ -768,8 +851,7 @@ connect_to_invalid_host(Spec) ->
     escalus:wait_for_stanzas(Conn, 3).
 
 connect_to_invalid_host(Conn, UnusedFeatures) ->
-    escalus:send(Conn, escalus_stanza:stream_start(<<"hopefullynonexistentdomain">>,
-                                                   ?NS_JABBER_CLIENT)),
+    escalus:send(Conn, escalus_stanza:stream_start(<<"hopefullynonexistentdomain">>)),
     {Conn, UnusedFeatures}.
 
 connect_with_bad_xml(Spec) ->
@@ -780,44 +862,9 @@ connect_with_bad_xml(Conn, UnusedFeatures) ->
     escalus_connection:send(Conn, #xmlcdata{content = "asdf\n"}),
     {Conn, UnusedFeatures}.
 
-connect_with_invalid_stream_namespace(Spec) ->
-    F = fun (Conn, UnusedFeatures) ->
-                Start = stream_start_invalid_stream_ns(escalus_users:get_server([], Spec)),
-                escalus:send(Conn, Start),
-                {Conn, UnusedFeatures}
-        end,
-    {ok, Conn, _} = escalus_connection:start(Spec, [F]),
-    escalus:wait_for_stanzas(Conn, 3).
-
-start_stream_pre_xmpp_1_0(Conn = #client{props = Props}, UnusedFeatures) ->
-    escalus:send(Conn, stream_start_pre_xmpp_1_0(escalus_users:get_server([], Props))),
-    #xmlstreamstart{attrs = StreamAttrs} = StreamStart = escalus:wait_for_stanza(Conn),
-    escalus:assert(is_stream_start, StreamStart),
-    {<<"id">>, StreamID} = lists:keyfind(<<"id">>, 1, StreamAttrs),
-    {Conn#client{props = [{stream_id, StreamID} | Props]}, UnusedFeatures}.
-
-stream_start_pre_xmpp_1_0(To) ->
-        stream_start(lists:keystore(version, 1, default_context(To), {version, <<>>})).
-
-stream_start(Context) ->
-    %% Be careful! The closing slash here is a hack to enable implementation of from_template/2
-    %% to parse the snippet properly. In standard XMPP <stream:stream> is just opening of an XML
-    %% element, NOT A SELF CLOSING element.
-    T = <<"<stream:stream {{version}} xml:lang='en' xmlns='jabber:client' "
-          "               to='{{to}}' "
-          "               xmlns:stream='{{stream_ns}}' />">>,
-    %% So we rewrap the parsed contents from #xmlel{} to #xmlstreamstart{} here.
-    #xmlel{name = Name, attrs = Attrs, children = []} = escalus_stanza:from_template(T, Context),
-    #xmlstreamstart{name = Name, attrs = Attrs}.
-
-stream_start_invalid_stream_ns(To) ->
-    stream_start(lists:keystore(stream_ns, 1, default_context(To),
-                                {stream_ns, <<"obviously-invalid-namespace">>})).
-
-default_context(To) ->
-    [{version, <<"version='1.0'">>},
-     {to, To},
-     {stream_ns, ?NS_XMPP}].
+start_stream(Conn = #client{props = Props, module = Module}, UnusedFeatures) ->
+    escalus:send(Conn, Module:stream_start_req(Props)),
+    {Conn, UnusedFeatures}.
 
 children_specs_to_pids(Children) ->
     [Pid || {_, Pid, _, _} <- Children].
@@ -837,13 +884,12 @@ pipeline_connect(UserSpec) ->
 
     Conn = escalus_connection:connect(UserSpec),
 
-    Stream = escalus_stanza:stream_start(Server, <<"jabber:client">>),
+    Stream = escalus_stanza:stream_start(Server),
     Auth = escalus_stanza:auth(<<"PLAIN">>, [#xmlcdata{content = base64:encode(AuthPayload)}]),
-    AuthStream = escalus_stanza:stream_start(Server, <<"jabber:client">>),
     Bind = escalus_stanza:bind(<<?MODULE_STRING "_resource">>),
     Session = escalus_stanza:session(),
 
-    escalus_connection:send(Conn, [Stream, Auth, AuthStream, Bind, Session]),
+    escalus_connection:send(Conn, [Stream, Auth, Stream, Bind, Session]),
     Conn.
 
 send_proxy_header(Conn, UnusedFeatures) ->
@@ -863,6 +909,7 @@ proxy_info() ->
      }.
 
 instrumentation_events() ->
-    instrument_helper:declared_events(mongoose_c2s_listener, [#{}])
-    ++ instrument_helper:declared_events(mongoose_c2s, [global])
-    ++ [{c2s_message_processed, #{host_type => domain_helper:host_type()}}].
+    C2sGenericEvents =
+        [E || {_, Labels} = E <- instrument_helper:declared_events(mongoose_c2s, []),
+              not maps:is_key(host_type, Labels)],
+    [{c2s_message_processed, #{host_type => domain_helper:host_type()}} | C2sGenericEvents].

@@ -34,14 +34,16 @@
 
 -include("mongoose.hrl").
 
-
 %%%
 %%% Application API
 %%%
 
 start(normal, _Args) ->
     try
-        do_start()
+        %% We want to print the starting progress if starting is too slow
+        %% (i.e. it would print the current stacktrace each several seconds
+        %%  during the startup)
+        mongoose_task:run_tracked(#{task => start_mongooseim}, fun do_start/0)
     catch Class:Reason:StackTrace ->
         %% Log a stacktrace because while proc_lib:crash_report/4 would report a crash reason,
         %% it would not report the stacktrace
@@ -59,7 +61,6 @@ do_start() ->
     mongoose_config:start(),
     mongoose_internal_databases:init(),
     mongoose_graphql:init(),
-    translate:start(),
     mongoose_graphql_commands:start(),
     mongoose_logs:set_global_loglevel(mongoose_config:get_opt(loglevel)),
     mongoose_deprecations:start(),
@@ -86,64 +87,29 @@ do_start() ->
 %% @doc Prepare the application for termination.
 %% This function is called when an application is about to be stopped,
 %% before shutting down the processes of the application.
-prep_stop(State) ->
+prep_stop(_State) ->
     mongoose_deprecations:stop(),
-    broadcast_c2s_shutdown_listeners(),
+    StoppedCount = mongoose_listener:suspend_listeners_and_shutdown_connections(),
     mongoose_listener:stop(),
     mongoose_modules:stop(),
     mongoose_service:stop(),
-    broadcast_c2s_shutdown_sup(),
     mongoose_wpool:stop(),
     mongoose_graphql_commands:stop(),
     mongoose_router:stop(),
     mongoose_system_probes:stop(),
-    State.
+    #{stopped_count => StoppedCount}.
 
 %% All the processes were killed when this function is called
-stop(_State) ->
+stop(#{stopped_count := StoppedCount}) ->
     mongoose_config:stop(),
-    ?LOG_NOTICE(#{what => mongooseim_node_stopped, version => ?MONGOOSE_VERSION, node => node()}),
+    ?LOG_NOTICE(#{what => mongooseim_node_stopped, version => ?MONGOOSE_VERSION,
+                  node => node(), stopped_sessions_count => StoppedCount}),
     delete_pid_file(),
     update_status_file(stopped),
     %% We cannot stop other applications inside of the stop callback
     %% (because we would deadlock the application controller process).
     %% That is why we call mnesia:stop() inside of db_init_mnesia() instead.
     ok.
-
-%%%
-%%% Internal functions
-%%%
-
--spec broadcast_c2s_shutdown_listeners() -> ok.
-broadcast_c2s_shutdown_listeners() ->
-    Children = supervisor:which_children(mongoose_listener_sup),
-    Listeners = [Ref || {Ref, _, _, [mongoose_c2s_listener]} <- Children],
-    lists:foreach(
-        fun(Listener) ->
-            ranch:suspend_listener(Listener),
-            [mongoose_c2s:exit(Pid, system_shutdown) || Pid <- ranch:procs(Listener, connections)],
-            mongoose_lib:wait_until(
-                fun() ->
-                    length(ranch:procs(Listener, connections))
-                end,
-                0)
-        end,
-        Listeners).
-
--spec broadcast_c2s_shutdown_sup() -> ok.
-broadcast_c2s_shutdown_sup() ->
-    Children = supervisor:which_children(mongoose_c2s_sup),
-    lists:foreach(
-        fun({_, Pid, _, _}) ->
-            mongoose_c2s:exit(Pid, system_shutdown)
-        end,
-        Children),
-    mongoose_lib:wait_until(
-        fun() ->
-              Res = supervisor:count_children(mongoose_c2s_sup),
-              proplists:get_value(active, Res)
-        end,
-        0).
 
 %%%
 %%% PID file

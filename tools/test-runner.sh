@@ -37,6 +37,7 @@ Options:
 --skip-start-nodes    -- do not start nodes before big tests
 --skip-stop-nodes     -- do not stop nodes after big tests
 --skip-setup-db       -- do not start any databases, the same as "--db --" option
+--skip-validate-nodes -- do not check if MongooseIM is running
 --no-parallel         -- run most commands in sequence
 --tls-dist            -- enable encryption between nodes in big tests
 --verbose             -- print script output
@@ -92,9 +93,6 @@ Script examples:
 ./tools/test-runner.sh --skip-small-tests --db redis mysql --preset mysql_redis
     CI build job with mysql_redis
 
-./tools/test-runner.sh --skip-small-tests --db redis mssql --preset odbc_mssql_mnesia
-    CI build job with odbc_mssql_mnesia
-
 ./tools/test-runner.sh --skip-small-tests --db redis ldap --preset ldap_mnesia
     CI build job with ldap_mnesia
 
@@ -117,6 +115,9 @@ Script examples:
 
 ./tools/test-runner.sh --rerun-big-tests -- mam
     The same command as above
+
+./tools/test-runner.sh --skip-small-tests --skip-start-nodes --skip-validate-nodes -- connect
+    Continues test execution even if MongooseIM is not running on all nodes
 
 ./tools/test-runner.sh --help --examples --colors | more
     Display help using "more" command
@@ -271,7 +272,6 @@ DBS_ARRAY=(
     pgsql
     cassandra
     elasticsearch
-    mssql
     redis
     ldap
 )
@@ -309,6 +309,7 @@ SELECTED_TESTS=()
 STOP_SCRIPT=false
 SKIP_DB_SETUP=false
 DB_FROM_PRESETS=true
+SKIP_VALIDATE_NODES=false
 
 # Parse command line arguments
 # Prefer arguments to env variables
@@ -351,6 +352,11 @@ case $key in
         shift # past argument
         SKIP_DB_SETUP=true
         DB_FROM_PRESETS=false
+    ;;
+
+    --skip-validate-nodes)
+        shift # past argument
+        SKIP_VALIDATE_NODES=true
     ;;
 
     # Similar how we parse --db option
@@ -604,7 +610,7 @@ DBS_DEFAULT="${DBS_ARRAY[@]}"
 DEV_NODES_DEFAULT="${DEV_NODES_ARRAY[@]}"
 TEST_HOSTS_DEFAULT="${TEST_HOSTS_ARRAY[@]}"
 
-./tools/configure with-all
+./tools/configure
 
 # Pass extra arguments from tools/test_runner/selected-tests-to-test-spec.sh
 # to rebar3 in Makefile
@@ -635,6 +641,7 @@ export TESTSPEC="auto_big_tests.spec"
 export START_NODES="$START_NODES"
 export STOP_NODES="$STOP_NODES"
 export PAUSE_BEFORE_BIG_TESTS="$PAUSE_BEFORE_BIG_TESTS"
+export SKIP_VALIDATE_NODES="$SKIP_VALIDATE_NODES"
 
 # Debug printing
 echo "Variables:"
@@ -653,6 +660,7 @@ echo "    TESTSPEC=$TESTSPEC"
 echo "    TLS_DIST=$TLS_DIST"
 echo "    START_NODES=$START_NODES"
 echo "    STOP_NODES=$STOP_NODES"
+echo "    SKIP_VALIDATE_NODES=$SKIP_VALIDATE_NODES"
 echo ""
 
 

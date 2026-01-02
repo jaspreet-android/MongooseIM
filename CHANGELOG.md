@@ -1,3 +1,273 @@
+# [MongooseIM 6.5.0](https://github.com/esl/MongooseIM/releases/tag/6.5.0) - 2025-12-08
+
+## Highlights
+- Enhanced and enriched implementation of `mod_event_pusher_rabbit`
+- Enabled TLS support for Redis and RabbitMQ connections
+- Support for XEP-0402 PEP Native Bookmarks
+- Support for Erlang 28 and dropped support for Erlang 26
+- Various enhancements and bug fixes
+- Refactoring and improvements of tests
+
+## Added
+- XEP-0402 PEP Native Bookmarks (#4545)
+- Implement support for blocking a user for any groupchat (#4548)
+- Support Erlang 28 (#4549)
+- Enable selected rabbit exchanges (#4576)
+- Enable TLS connections to Redis (#4579)
+- Support common name prefix/suffix for SASL External (#4580)
+- Support durable exchanges in `mod_event_pusher_rabbit` (#4582)
+- Support TLS in RabbitMQ connection pools (#4583)
+- Support RabbitMQ virtual hosts (#4585)
+
+## Changed
+- Use cached affiliations in MUC Light API (#4552)
+- Refactor logging to use `c2s_data` consistently in log messages (#4561)
+- Separate certfile and keyfile (#4566)
+- Deprecate MSSQL backend (#4574)
+- Skip all messages without body in `mod_event_pusher_rabbit` (#4577)
+- Use a hook with handlers in `mod_event_pusher` (#4578)
+
+## Fixed
+- Fix and update GraphiQL (#4543)
+- Strip Acc when it is buffered to save memory (#4544)
+- Fix missing presence unavailable notifications in Stream Management (#4557)
+- Fix missing stream tag for connection-timeout errors (#4559)
+- Fix TLS error logs (#4565)
+- Fix component IsValidFromJid returning non boolean (#4572)
+- Fix colon escaping in Redis session backend (#4584)
+- Fix race condition in mod_mam create_user_archive (#4592)
+
+## Removed
+- Drop support for Erlang 26 (#4549)
+
+## Other
+- Update Debian release and minor OTP versions (#4555)
+- Rework tests for invalid stream opening tag/element (#4556)
+- Fix documentation of mod_blocking (#4560)
+- Use the PGDATA directory in docker-setup-postgres (#4563)
+- Fix heading levels in mod_inbox doc (#4570)
+- Fix the test runner script (#4573)
+- Refactor mod_muc_api:create_instant_room/3 (#4575)
+- Refactor sasl_external_SUITE (#4581)
+- Enable "Rerun Failed Tests" for Small Tests (#4586)
+
+## Commits, merged PRs and closed issues
+- [List of merged PRs](https://github.com/esl/MongooseIM/pulls?q=is%3Apr+is%3Amerged+milestone%3A6.5.0)
+
+- [List of closed issues](https://github.com/esl/MongooseIM/issues?q=is%3Aissue%20is%3Aclosed%20closed%3A2025-06-26..2025-12-08)
+
+- [Repository history for this release](https://github.com/esl/MongooseIM/graphs/contributors?from=2025-06-26&to=2025-12-08&type=c)
+
+- [List of merged PRs based on merge date](https://github.com/esl/MongooseIM/pulls?q=is%3Apr+is%3Amerged+milestone%3A6.5.0+sort%3Aupdated-desc)
+
+# [MongooseIM 6.4.0](https://github.com/esl/MongooseIM/releases/tag/6.4.0) - 2025-06-25
+
+## Highlights
+- Reworked S2S and component listeners
+- Added TLS 1.3 `tls-exporter` channel binding
+- Added 0-RTT, and channel binding in FAST authentication
+- Unified connection and TLS handling
+- Improved XMPP traffic shaper configuration with validation and clearer defaults
+- Cleanup of legacy modules and updated dependencies
+- Reworked application startup order (start applications only when needed)
+- Use system CA certificates if not provided in a file
+- Various enhancements and bug fixes
+
+## Added
+- Support dynamic domains for components (#4450)
+- TLS listeners for components (#4453)
+- TLS 0-RTT to `mod_fast_auth_token` (#4478)
+- Channel binding in FAST authentication (#4494)
+- Option to clear inbox after destroying MUC Light room (#4522)
+
+## Changed
+- Reworked listeners and TLS (#4452, #4509)
+  - Reworked component connection handling (#4442)
+  - Changed component listener naming scheme to match XMPP specification (#4451)
+  - Reworked S2S listeners (#4455)
+  - Unified listener TLS configuration via `fast_tls` removal and channel binding (#4458)
+  - Unified listener handling (#4460)
+  - Reworked adding dynamic domains to components (#4461)
+  - Improved consistency of `just_tls` filters (#4467)
+  - Reworked S2S incoming connections (#4470, #4513)
+  - Reworked S2S outgoing connections (#4479)
+  - System certificates are used if CA certs are not provided in a file (#4493)
+  - Reorganized S2S configuration options (#4515)
+  - Improved instrumentation consistency (#4517)
+  - Simplified and unified XMPP metrics (#4520)
+  - Minor optimizations and cleanups (#4480, #4512, #4514, #4516)
+- Increased rate for the default `normal` shaper (#4540)
+- Reworked application startup order and FIPS config (#4524, #4528, #4542)
+
+## Fixed
+- XMPP traffic shapers configuration and validation (#4527)
+- `max_file_size` option in `mod_http_upload` (#4531)
+- Fixed incorrect `xmlns` in presences sent by `mod_muc` (#4539)
+
+## Removed
+- Dead `max_fsm_queue` option (#4521)
+- Last mention of unused `EJABBERD_DIR` variable (#4533)
+
+## Other
+- Upgraded dependencies (#4500, #4519)
+- Updated `exometer_labels` converter function (#4507)
+- Changed base docker image to `ubuntu-noble` (#4537)
+- Documentation improvements (#4504, #4506, #4525)
+- Testing and CI improvements/fixes (#4523, #4529, #4532, #4534)
+- Replaced the `ubuntu-oracular` package with `ubuntu-plucky` (#4536)
+
+## Commits, merged PRs and closed issues
+- [List of merged PRs](https://github.com/esl/MongooseIM/pulls?q=is%3Apr+is%3Amerged+milestone%3A6.4.0)
+
+- [List of closed issues](https://github.com/esl/MongooseIM/issues?q=is%3Aissue+is%3Aclosed+closed%3A2024-12-30..2025-06-25)
+
+- [Repository history for this release](https://github.com/esl/MongooseIM/graphs/contributors?from=2024-12-30&to=2025-06-25&type=c)
+
+- [List of merged PRs based on merge date](https://github.com/esl/MongooseIM/pulls?q=is%3Apr+is%3Amerged+milestone%3A6.4.0+sort%3Aupdated-desc)
+
+# [MongooseIM 6.3.3](https://github.com/esl/MongooseIM/releases/tag/6.3.3) - 2025-04-10
+
+## Highlights
+- Fixed buffer duplication issue in stream management
+- Improved IQ handling for unknown ID formats
+- Restored package support for older systems
+- Various enhancements and bug fixes
+
+## Fixed
+- Duplication issue in stream management buffer (#4496, #4498)
+- Stream management stanza counting (#4501)
+- Improper response when receiving IQ with unknown ID format (#4503)
+- Bundled OpenSSL 3.x to restore package support on older systems (#4511)
+
+## Removed
+- Call to an unsupported MySQL option (#4508)
+
+## Other
+- Minor refactor of `mod_stream_management` (#4497)
+- Improved type specs for Sid (#4502)
+- Documentation improvements (#4495)
+- Testing improvements (#4505)
+
+## Commits, merged PRs and closed issues
+- [List of merged PRs](https://github.com/esl/MongooseIM/pulls?q=is%3Apr+is%3Amerged+milestone%3A6.3.3)
+
+- [List of closed issues](https://github.com/esl/MongooseIM/issues?q=is%3Aissue+is%3Aclosed+closed%3A2025-02-24..2025-04-09)
+
+- [Repository history for this release](https://github.com/esl/MongooseIM/graphs/contributors?from=2025-02-24&to=2025-04-09&type=c)
+
+- [List of merged PRs based on merge date](https://github.com/esl/MongooseIM/pulls?q=is%3Apr+is%3Amerged+milestone%3A6.3.3+sort%3Aupdated-desc)
+
+# [MongooseIM 6.3.2](https://github.com/esl/MongooseIM/releases/tag/6.3.2) - 2025-02-24
+
+## Highlights
+- Added support for XEP-0484: **Fast Authentication Streamlining Tokens**
+- Upgraded to **exml 4.1.1**
+- Deprecated `fast_tls`
+- Improved `just_tls` with distinct client and server options
+- Various enhancements and bug fixes
+
+## Added
+- Distinction between client and server options for `just_tls` (#4456)
+- XEP-0484: "Fast Authentication Streamlining Tokens" implementation (#4379)
+
+## Changed
+- Updated exml to 4.1.1 (#4465, #4471, #4473)
+- Update dependencies: `erl_cloud` and `base16` (#4469)
+- Deprecated `fast_tls` for C2S (#4468)
+- Behavior of PEP discovery to closely match the XEP specification (#4475)
+- Migrated GraphiQL to V3 (#4474)
+- Translations are now a service (#4481)
+- Cleaned up empty GraphQL queries (#4482)
+- Updated `elvis.config` to exclude modules that do not match linter standards (#4483)
+
+## Fixed
+- Description of log handler migration (#4454)
+- Compilation warnings (#4462)
+- Certificates generations for CockroarchDB (#4466)
+- `probe_failed` error (#4440)
+- Wrong namespace when removing IQ handlers in `mod_sic` (#4484)
+- SCRAM hashing issue by upgrading `fast_scram` library (#4491)
+
+## Other
+- Documentation improvements (#4476, #4487, #4488)
+- CI improvements (#4459)
+
+## Known issues and upgrade recommendations
+- If you are using MongooseIM 4.1.0 to 6.3.1 with SCRAM authentication and OpenSSL >=3.4.1, hashes for algorithms stronger than SHA-1 are calculated incorrectly.
+This issue is fixed in this release. See [SCRAM hashing issue](/doc/developers-guide/SCRAM-serialization.md#scram-hash-calculation-issue-in-mongooseim-410631) for details and required actions.
+- OpenSSL versions below 3.0 are no longer supported. If you are using OpenSSL 1.x or older, you must upgrade to OpenSSL 3.x before updating MongooseIM, as older versions will not work.
+
+## Commits, merged PRs and closed issues
+- [List of merged PRs](https://github.com/esl/MongooseIM/pulls?q=is%3Apr+is%3Amerged+milestone%3A6.3.2)
+
+- [List of closed issues](https://github.com/esl/MongooseIM/issues?q=is%3Aissue+is%3Aclosed+closed%3A2024-12-30..2025-02-24)
+
+- [Repository history for this release](https://github.com/esl/MongooseIM/graphs/contributors?from=2024-12-30&to=2025-02-24&type=c)
+
+- [List of merged PRs based on merge date](https://github.com/esl/MongooseIM/pulls?q=is%3Apr+is%3Amerged+milestone%3A6.3.2+sort%3Aupdated-desc)
+
+## Special thanks to our contributors
+- [@xvnds](https://github.com/xvnds) Migrated graphiql to v3 (#4474)
+
+# [MongooseIM 6.3.1](https://github.com/esl/MongooseIM/releases/tag/6.3.1) - 2024-12-30
+
+## Highlights
+- Better certificate validation
+- Improved CockroachDB support
+- Removed unnecessary components
+- Multiple owner support in MUC Light
+- Packages are now published on GitHub
+- Various improvements and fixes
+
+## Added
+- Checking of probe metrics types (#4390)
+- Multiple owner support in MUC Light (#4392)
+- Delays to SM buffer (#4407)
+- Better logging when something takes longer than expected (#4427, #4430)
+- Support `open_test_database_shell` for CockroachDB (#4438)
+
+## Changed
+- Enforced `fail_if_no_peer_cert` in `just_tls` for stricter client certificate validation (#4386)
+- Allowed config processor to be a list of functions (#4396)
+- `fast_tls` to validate CA certificate when `verify_mode` is set to `verify_peer` or `selfsigned_peer` (#4391)
+- Supervisor, listeners, components and types cleanup (#4441)
+- Optimized memory usage in `just_tls` (#4447)
+
+## Fixed
+- MUC room crash when handling old protocol stanza (#4387)
+- CockroachDB consistency (#4402)
+- Shutdown logic to prevent `event_not_registered` errors by stopping c2s processes before listeners (#4400)
+- Definition of the "protected" GraphQL directive (#4409)
+- GraphQL library is now used as a package (#4405)
+- Package related warning (#4410)
+- IO list handling in `jiffy:encode` (#4420)
+- Error on startup: "No such file or directory" (#4436)
+- MongooseIM is restarted as a permanent application rather than a temporary one (#4443)
+
+## Removed
+- Lager as a dependency (#4393)
+- Goldrush from `rebar.lock` (#4397)
+- Dead tools and code (#4411)
+- Native code from `mam_id` (#4412)
+- More complicated dead code (#4422)
+- Base16 library (#4415)
+
+## Other
+- Updated dependencies (#4428)
+- Documentation improvements (#4388)
+- CI improvements/fixes (#4403, #4416, #4417, #4435)
+- Streamlined package workflow (#4385, #4399, #4414, #4406, #4425, #4432, #4449)
+- Testing improvements/fixes (#4394, #4398, #4418,  #4419, #4401, #4426, #4431, #4423, #4424, #4433, #4437, #4434, #4444, #4445)
+
+## Commits, merged PRs and closed issues
+- [List of merged PRs](https://github.com/esl/MongooseIM/pulls?q=is%3Apr+is%3Amerged+milestone%3A6.3.1)
+
+- [List of closed issues](https://github.com/esl/MongooseIM/issues?q=is%3Aissue+is%3Aclosed+closed%3A2024-10-22..2024-12-30)
+
+- [Repository history for this release](https://github.com/esl/MongooseIM/graphs/contributors?from=2024-10-22&to=2024-12-30&type=c)
+
+- [List of merged PRs based on merge date](https://github.com/esl/MongooseIM/pulls?q=is%3Apr+is%3Amerged+milestone%3A6.3.1+sort%3Aupdated-desc)
+
 # [MongooseIM 6.3.0](https://github.com/esl/MongooseIM/releases/tag/6.3.0) - 2024-10-22
 
 ## Highlights

@@ -395,7 +395,7 @@ store_session(Sid, Socket) ->
 %% (but if the key is always random CETS is happy with that too)
 -spec make_sid() -> binary().
 make_sid() ->
-    base16:encode(crypto:strong_rand_bytes(20)).
+    binary:encode_hex(crypto:strong_rand_bytes(20), lowercase).
 
 %%--------------------------------------------------------------------
 %% HTTP errors
@@ -432,9 +432,9 @@ terminal_condition(Condition, Details, Req) ->
 -spec terminal_condition_body(binary(), [exml:element()]) -> binary().
 terminal_condition_body(Condition, Children) ->
     exml:to_binary(#xmlel{name = <<"body">>,
-                          attrs = [{<<"type">>, <<"terminate">>},
-                                   {<<"condition">>, Condition},
-                                   {<<"xmlns">>, ?NS_HTTPBIND}],
+                          attrs = #{<<"type">> => <<"terminate">>,
+                                    <<"condition">> => Condition,
+                                    <<"xmlns">> => ?NS_HTTPBIND},
                           children = Children}).
 
 %%--------------------------------------------------------------------
@@ -481,7 +481,10 @@ set_max_hold(Body) ->
 maybe_set_max_hold(1, Body) ->
     {ok, Body};
 maybe_set_max_hold(ClientHold, #xmlel{attrs = Attrs} = Body) when ClientHold > 1 ->
-    NewAttrs = lists:keyreplace(<<"hold">>, 1, Attrs, {<<"hold">>, <<"1">>}),
+    NewAttrs = case Attrs of
+                   #{<<"hold">> := _} -> Attrs#{<<"hold">> => <<"1">>};
+                   _ -> Attrs
+               end,
     {ok, Body#xmlel{attrs = NewAttrs}};
 maybe_set_max_hold(_, _) ->
     {error, invalid_hold}.

@@ -57,6 +57,17 @@ Number of workers to be started by the pool.
 
 Number of milliseconds after which a call to the pool will time out.
 
+### `outgoing_pools.*.*.max_worker_queue_len`
+* **Syntax:** non-negative integer
+* **Default:** not set
+* **Example:** `max_worker_queue_len = 1000`
+
+Maximum number of requests waiting in the incoming message queue of a worker. By default there is no such limit.
+When this queue length is reached for all workers, further incoming requests will be dropped.
+
+!!! Note
+    This option is applicable only to the `best_worker` strategy. Using it for other strategies is not allowed.
+
 ## Connection options
 
 Options specific to a pool connection are defined in a subsection starting with `[outgoing_pools.*.*.connection]`.
@@ -74,7 +85,7 @@ For example:
 ### RDBMS options
 
 #### `outgoing_pools.rdbms.*.connection.driver`
-* **Syntax:** string, one of `"pgsql"`, `"mysql"`, `"cockroachdb"` or `"odbc"` (a supported driver)
+* **Syntax:** string, one of `"pgsql"`, `"mysql"`, `"cockroachdb"`
 * **Default:** none - this option is mandatory
 * **Example:** `driver = "psgql"`
 
@@ -128,6 +139,7 @@ When MongooseIM fails to connect to the DB, it retries with an exponential backo
 * **Default:** no default; required for `pgsql`, `cockroachdb` and `mysql`
 * **Example:** `password = "mim-password"`
 
+---
 To enable TLS, you need to include the [TLS section](#tls-options) in the connection options. There is one additonal option for PostgreSQL and CockroachDB:
 
 #### `outgoing_pools.rdbms.*.connection.tls.required`
@@ -136,34 +148,6 @@ To enable TLS, you need to include the [TLS section](#tls-options) in the connec
 * **Example:** `tls.required = true`
 
 This option can be used to enforce a TLS connection.
-
-### ODBC options
-
-#### `outgoing_pools.rdbms.*.connection.settings`
-* **Syntax:** string
-* **Default:** no default; required if the `"odbc"` driver is specified
-* **Example:** `settings = "DSN=mydb"`
-
-ODBC - specific string defining connection parameters.
-
-#### ODBC SSL connection setup
-
-If you've configured MongooseIM to use an ODBC driver, then the SSL options, along other connection options, should be present in the `~/.odbc.ini` file.
-
-To enable SSL connection the `sslmode` option needs to be set to `verify-full`.
-Additionally, you can provide the path to the CA certificate using the `sslrootcert` option.
-
-##### Example ~/.odbc.ini configuration
-
-```ini
-[mydb]
-Driver      = ...
-ServerName  = ...
-Port        = ...
-...
-sslmode     = verify-full
-sslrootcert = /path/to/ca/cert
-```
 
 ## HTTP options
 
@@ -186,6 +170,7 @@ Initial part of path which will be common to all calls. Prefix will be automatic
 
 Number of milliseconds after which http call to the server will time out. It should be lower than `call_timeout` set at the pool level.
 
+---
 To enable TLS, you need to include the [TLS section](#tls-options) in the connection options.
 
 ## Redis-specific options
@@ -220,6 +205,9 @@ Logical database index (zero-based).
 * **Default:** `""`
 * **Example:** `password = "topsecret"`
 
+---
+To enable TLS, you need to include the [TLS section](#tls-options) in the connection options.
+
 ## Cassandra options
 
 ### `outgoing_pools.cassandra.*.connection.servers`
@@ -246,6 +234,7 @@ To use plain text authentication (using cqerl_auth_plain_handler module):
 
 Support for other authentication modules may be added in the future.
 
+---
 To enable TLS, you need to include the [TLS section](#tls-options) in the connection options.
 
 ## Elasticsearch options
@@ -318,6 +307,13 @@ Any other `Tag` can be used for other purposes.
 * **Default:** `"guest"`
 * **Example:** `password = "guest"`
 
+### `outgoing_pools.rabbit.*.connection.virtual_host`
+* **Syntax:** string
+* **Default:** `"/"`
+* **Example:** `virtual_host = "host_example"`
+
+Sets the RabbitMQ Virtual Host. The host needs to exist, as it is **not** created automatically.
+
 ### `outgoing_pools.rabbit.*.connection.confirms_enabled`
 * **Syntax:** boolean
 * **Default:** `false`
@@ -325,12 +321,29 @@ Any other `Tag` can be used for other purposes.
 
 Enables/disables one-to-one publishers confirms.
 
-### `outgoing_pools.rabbit.*.connection.max_worker_queue_len`
-* **Syntax:** non-negative integer or `"infinity"`
-* **Default:** `1000`
-* **Example:** `max_worker_queue_len = "infinity"`
+### `outgoing_pools.rabbit.*.connection.reconnect.attempts`
+* **Syntax:** non-negative integer
+* **Default:** 0
+* **Example:** `reconnect.attempts = 5`
 
-Sets a limit of messages in a worker's mailbox above which the worker starts dropping the messages. If a worker message queue length reaches the limit, messages from the head of the queue are dropped until the queue length is again below the limit. Use `infinity` to disable.
+By default, a failed connection attempt results in an immediate restart of the affected worker.
+When this happens, its incoming request queue is lost, and any requests present in the queue are dropped.
+To avoid this, you can use this option to specify a number of reconnection attempts before the worker is restarted.
+
+!!! Warning
+    Using this option might result in a lot of requests being accumulated in the worker queues - especially if `reconnect.delay` multiplied by `reconnect.attempts` is a long time period.
+    Thus, we recommend using the [`max_worker_queue_len`](#outgoing_poolsmax_worker_queue_len) option as a safety valve is such cases.
+
+### `outgoing_pools.rabbit.*.connection.reconnect.delay`
+* **Syntax:** non-negative integer (milliseconds)
+* **Default:** 2000
+* **Example:** `reconnect.delay = 5000`
+
+Delay (in milliseconds) between consecutive reconnection attempts.
+This option is effective only if the value of `reconnect.attempts` is positive.
+
+---
+To enable TLS, you need to include the [TLS section](#tls-options) in the connection options.
 
 ## LDAP options
 
@@ -363,6 +376,7 @@ Leaving out this option makes it an anonymous connection, which most likely is w
 
 Reconnect interval after a failed connection.
 
+---
 To enable TLS, you need to include the [TLS section](#tls-options) in the connection options.
 
 ## TLS options
@@ -383,7 +397,7 @@ Specifies the way server certificate verification works:
 ### `outgoing_pools.*.*.connection.tls.certfile`
 * **Syntax:** string, path in the file system
 * **Default:** not set
-* **Example:** `tls.certfile = "server.pem"`
+* **Example:** `tls.certfile = "cert.pem"`
 
 Path to the X509 PEM file with a certificate.
 If the certificate is signed by an intermediate CA, you should specify here the whole CA chain by concatenating all public keys together.
@@ -414,7 +428,7 @@ Password to the X509 PEM file with the private key.
 * **Default:** not set, all supported cipher suites are accepted
 * **Example:** `tls.ciphers = "ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384"`
 
-Cipher suites to use. Please refer to the [OpenSSL documentation](http://www.openssl.org/docs/man1.0.2/apps/ciphers.html) for the cipher string format. For allowed values, see the [Erlang/OTP SSL documentation](https://erlang.org/doc/man/ssl.html#type-ciphers).
+Cipher suites to use. Please refer to the [OpenSSL documentation](https://docs.openssl.org/master/man1/openssl-ciphers/) for the cipher string format. For allowed values, see the [Erlang/OTP SSL documentation](https://erlang.org/doc/man/ssl.html#type-ciphers).
 
 ### `outgoing_pools.*.*.connection.tls.versions`
 * **Syntax:** list of strings

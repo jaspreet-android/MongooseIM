@@ -102,7 +102,7 @@ nav:
   - 'Listeners':
       - 'Client to server (C2S)': 'listeners/listen-c2s.md'
       - 'Server to server (S2S)': 'listeners/listen-s2s.md'
-      - 'XMPP components (service)': 'listeners/listen-components.md'
+      - 'XMPP components': 'listeners/listen-components.md'
       - 'HTTP-based services': 'listeners/listen-http.md'
   - 'Authentication Methods':
       - 'RDBMS': 'authentication-methods/rdbms.md'
@@ -133,6 +133,7 @@ nav:
           - 'RabbitMQ backend': 'modules/mod_event_pusher_rabbit.md'
           - 'SNS backend': 'modules/mod_event_pusher_sns.md'
       - 'mod_extdisco': 'modules/mod_extdisco.md'
+      - 'mod_fast_auth_token': 'modules/mod_fast_auth_token.md'
       - 'mod_global_distrib': 'modules/mod_global_distrib.md'
       - 'mod_http_upload': 'modules/mod_http_upload.md'
       - 'mod_inbox': 'modules/mod_inbox.md'
@@ -214,6 +215,11 @@ nav:
       - '6.1.0 to 6.2.0': 'migrations/6.1.0_6.2.0.md'
       - '6.2.0 to 6.2.1': 'migrations/6.2.0_6.2.1.md'
       - '6.2.1 to 6.3.0': 'migrations/6.2.1_6.3.0.md'
+      - '6.3.0 to 6.3.1': 'migrations/6.3.0_6.3.1.md'
+      - '6.3.1 to 6.3.2': 'migrations/6.3.1_6.3.2.md'
+      - '6.3.3 to 6.4.0': 'migrations/6.3.3_6.4.0.md'
+      - '6.4.0 to 6.5.0': 'migrations/6.4.0_6.5.0.md'
+      - '6.5.0 to 6.x.x': 'migrations/6.5.0_6.x.x.md'
       - 'MAM MUC migration helper': 'migrations/jid-from-mam-muc-script.md'
   - 'Contributions to the Ecosystem': 'Contributions.md'
   - 'MongooseIM History': 'History.md'

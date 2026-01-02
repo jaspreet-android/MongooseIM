@@ -75,11 +75,15 @@ done
 builder_image="erlangsolutions/erlang:${platform}-${erlang_version}"
 target_image="${platform/-/:}"
 docker build -t mongooseim-${platform}:${version}-${revision} \
+    --progress=plain \
     --build-arg builder_image=${builder_image} \
     --build-arg target_image=${target_image} \
     --build-arg version=${version} \
     --build-arg revision=${revision} \
     --build-arg erlang_version=${erlang_version} \
+    --secret id=GPG_PUBLIC_KEY \
+    --secret id=GPG_PRIVATE_KEY \
+    --secret id=GPG_PASS \
     -f ${dockerfile_path} \
     $context_path
 

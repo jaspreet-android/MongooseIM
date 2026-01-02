@@ -33,9 +33,7 @@
 all() ->
     [
      no_request_in_worker_queue_is_lost_when_amqp_call_fails,
-     worker_creates_fresh_amqp_conection_and_channel_when_amqp_call_fails,
-     worker_processes_msgs_when_queue_msg_len_limit_is_not_reached,
-     worker_drops_msgs_when_queue_msg_len_limit_is_reached
+     worker_creates_fresh_amqp_conection_and_channel_when_amqp_call_fails
     ].
 
 %%--------------------------------------------------------------------
@@ -54,13 +52,9 @@ end_per_suite(Config) ->
     Config.
 
 init_per_testcase(_Case, Config) ->
-    WorkerOpts = [{host_type, ?HOST_TYPE},
-                  {pool_tag, test_tag},
-                  {amqp_client_opts, []},
-                  {confirms, false},
-                  {max_queue_len, ?MAX_QUEUE_LEN}],
     mongoose_instrument:start_link(),
     mongoose_instrument:set_up(mongoose_wpool_rabbit:instrumentation(?HOST_TYPE, test_tag)),
+    WorkerOpts = #{host_type => ?HOST_TYPE, pool_tag => test_tag, opts => conn_opts()},
     {ok, WorkerPid} = gen_server:start(mongoose_rabbit_worker, WorkerOpts, []),
     Config ++ [{worker_pid, WorkerPid}].
 
@@ -129,49 +123,12 @@ worker_creates_fresh_amqp_conection_and_channel_when_amqp_call_fails(Config) ->
     ?assert(is_pid(Channel3)),
     ?assertNotMatch(ConnectionAndChannel2, ConnectionAndChannel3).
 
-
-worker_processes_msgs_when_queue_msg_len_limit_is_not_reached(Config) ->
-    %% given
-    Worker = proplists:get_value(worker_pid, Config),
-    Ref = make_ref(),
-    Lock = lock_fun(),
-    SendBack = send_back_fun(),
-
-    %% when
-    gen_server:cast(Worker, {amqp_publish, {Lock, [Ref]}, ok}),
-    gen_server:cast(Worker, {amqp_publish, {SendBack, [self(), Ref]}, ok}),
-    [gen_server:cast(Worker, {amqp_publish, ok, ok})
-     || _ <- lists:seq(1, ?MAX_QUEUE_LEN-1)],
-
-    %% unlock the worker
-    Worker ! Ref,
-
-    %% then
-    ?assertReceivedMatch(Ref, 100).
-
-worker_drops_msgs_when_queue_msg_len_limit_is_reached(Config) ->
-    %% given
-    Worker = proplists:get_value(worker_pid, Config),
-    Ref = make_ref(),
-    Lock = lock_fun(),
-    SendBack = send_back_fun(),
-
-    %% when
-    gen_server:cast(Worker, {amqp_publish, {Lock, [Ref]}, ok}),
-    gen_server:cast(Worker, {amqp_publish, {SendBack, [self(), Ref]}, ok}),
-    [gen_server:cast(Worker, {amqp_publish, ok, ok})
-     || _ <- lists:seq(1, ?MAX_QUEUE_LEN+1)],
-
-    %% unlock the worker
-    Worker ! Ref,
-
-    %% then
-    ?assertError({assertReceivedMatch_failed, _},
-                 ?assertReceivedMatch(Ref, 100)).
-
 %%--------------------------------------------------------------------
 %% Helpers
 %%--------------------------------------------------------------------
+
+conn_opts() ->
+    config_parser_helper:default_config([outgoing_pools, rabbit, test_tag, conn_opts]).
 
 mock_amqp() ->
     [meck:new(M, [no_link, passthrough]) || M <- ?AMQP_MOCK_MODULES],

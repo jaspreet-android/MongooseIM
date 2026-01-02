@@ -126,8 +126,8 @@ publish_fails_with_invalid_item(Config) ->
 
             Item =
                 #xmlel{name = <<"invalid-item">>,
-                       attrs = [{<<"xmlns">>, ?NS_PUSH}]},
-            
+                       attrs = #{<<"xmlns">> => ?NS_PUSH}},
+
             Options = [
                 {<<"device_id">>, <<"sometoken">>},
                 {<<"service">>, <<"apns">>}
@@ -158,7 +158,7 @@ publish_fails_with_no_options(Config) ->
 
             Item =
                 #xmlel{name = <<"notification">>,
-                       attrs = [{<<"xmlns">>, ?NS_PUSH}],
+                       attrs = #{<<"xmlns">> => ?NS_PUSH},
                        children = push_helper:maybe_form(ContentFields, ?PUSH_FORM_TYPE)},
 
             Publish = escalus_pubsub_stanza:publish(Alice, <<"itemid">>, Item, <<"id">>, Node),
@@ -360,7 +360,7 @@ setup_pubsub(User) ->
 publish_iq(Client, Node, Content, Options) ->
     Item =
         #xmlel{name = <<"notification">>,
-               attrs = [{<<"xmlns">>, ?NS_PUSH}],
+               attrs = #{<<"xmlns">> => ?NS_PUSH},
                children = push_helper:maybe_form(Content, ?PUSH_FORM_TYPE)},
     OptionsEl =
         #xmlel{name = <<"publish-options">>,
@@ -396,7 +396,7 @@ rpc(M, F, A) ->
 
 bare_jid(JIDOrClient) ->
     ShortJID = escalus_client:short_jid(JIDOrClient),
-    list_to_binary(string:to_lower(binary_to_list(ShortJID))).
+    string:lowercase(ShortJID).
 
 %% ----------------------------------------------
 %% REST mock handler

@@ -81,9 +81,9 @@ change_affiliation(RoomJID, SenderJID, RecipientJID, Op) ->
     {ok | user_not_found | muc_server_not_found | room_not_found | not_room_member, iolist()}.
 send_message(RoomJID, SenderJID, Text) when is_binary(Text) ->
     Body = #xmlel{name = <<"body">>, children = [#xmlcdata{content = Text}]},
-    send_message(RoomJID, SenderJID, [Body], []).
+    send_message(RoomJID, SenderJID, [Body], #{}).
 
--spec send_message(jid:jid(), jid:jid(), [exml:element()], [exml:attr()]) ->
+-spec send_message(jid:jid(), jid:jid(), [exml:element()], exml:attrs()) ->
     {ok | user_not_found | muc_server_not_found | room_not_found | not_room_member, iolist()}.
 send_message(RoomJID, SenderJID, Children, ExtraAttrs) ->
     M = #{user => SenderJID, room => RoomJID, children => Children, attrs => ExtraAttrs},
@@ -264,7 +264,7 @@ do_send_message(#{user := SenderJID, room := RoomJID, children := Children, attr
     SenderBare = jid:to_bare(SenderJID),
     RoomBare = jid:to_bare(RoomJID),
     Stanza = #xmlel{name = <<"message">>,
-                    attrs = [{<<"type">>, <<"groupchat">>} | ExtraAttrs],
+                    attrs = ExtraAttrs#{<<"type">> => <<"groupchat">>},
                     children = Children},
     ejabberd_router:route(SenderBare, RoomBare, Stanza),
     {ok, "Message sent successfully"}.
@@ -319,7 +319,7 @@ return_info(#{room := RoomJID, aff_users := AffUsers, options := Config}) ->
     {ok, make_room(jid:to_binary(RoomJID), Config, AffUsers)}.
 
 do_get_room_aff(M = #{room := RoomJID, muc_host_type := HostType}) ->
-    case mod_muc_light_db_backend:get_aff_users(HostType, jid:to_lus(RoomJID)) of
+    case mod_muc_light:get_room_affiliations(HostType, RoomJID) of
         {ok, AffUsers, _Version} ->
             M#{aff_users => AffUsers};
         {error, not_exists} ->
@@ -357,7 +357,7 @@ do_set_blocking_list(#{user := UserJID, user_host_type := HostType, items := Ite
 -spec blocking_item(blocking_item()) -> exml:element().
 blocking_item({What, Action, Who}) ->
     #xmlel{name = atom_to_binary(What),
-           attrs = [{<<"action">>, atom_to_binary(Action)}],
+           attrs = #{<<"action">> => atom_to_binary(Action)},
            children = [#xmlcdata{ content = jid:to_binary(Who)}]
           }.
 
@@ -368,10 +368,9 @@ make_room_config(Options) ->
 -spec get_room_user_aff(mongooseim:host_type(), jid:jid(), jid:jid()) ->
     {ok, aff()} | {error, room_not_found}.
 get_room_user_aff(HostType, RoomJID, UserJID) ->
-    RoomUS = jid:to_lus(RoomJID),
-    UserUS = jid:to_lus(UserJID),
-    case mod_muc_light_db_backend:get_aff_users(HostType, RoomUS) of
+    case mod_muc_light:get_room_affiliations(HostType, RoomJID) of
         {ok, Affs, _Version} ->
+            UserUS = jid:to_lus(UserJID),
             {ok, get_aff(UserUS, Affs)};
         {error, not_exists} ->
             {error, room_not_found}
@@ -399,22 +398,22 @@ ensure_keys_are_binaries(Conf) ->
 iq(To, From, Type, Children) ->
     UUID = uuid:uuid_to_string(uuid:get_v4(), binary_standard),
     #xmlel{name = <<"iq">>,
-           attrs = [{<<"from">>, From},
-                    {<<"to">>, To},
-                    {<<"type">>, Type},
-                    {<<"id">>, UUID}],
+           attrs = #{<<"from">> => From,
+                     <<"to">> => To,
+                     <<"type">> => Type,
+                     <<"id">> => UUID},
            children = Children
           }.
 
 query(NS, Children) when is_binary(NS), is_list(Children) ->
     #xmlel{name = <<"query">>,
-           attrs = [{<<"xmlns">>, NS}],
+           attrs = #{<<"xmlns">> => NS},
            children = Children
           }.
 
 affiliate(JID, Kind) when is_binary(JID), is_binary(Kind) ->
     #xmlel{name = <<"user">>,
-           attrs = [{<<"affiliation">>, Kind}],
+           attrs = #{<<"affiliation">> => Kind},
            children = [ #xmlcdata{ content = JID } ]
           }.
 

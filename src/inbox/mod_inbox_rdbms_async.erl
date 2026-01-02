@@ -6,12 +6,6 @@
 -behaviour(mod_inbox_backend).
 -behaviour(mongoose_aggregator_worker).
 
--ifdef(gen_server_request_id).
--type request_id() :: gen_server:request_id().
--else.
--type request_id() :: term().
--endif.
-
 -type box() :: binary().
 -type task() ::
     {set_inbox, mod_inbox:entry_key(), exml:element(), pos_integer(), id(), integer(), box()} |
@@ -70,22 +64,20 @@ start_pool(HostType, Opts) ->
     mongoose_async_pools:start_pool(HostType, inbox, Opts).
 
 %% Worker callbacks
--spec request(task(), mongoose_async_pools:pool_extra()) -> request_id().
+-spec request(task(), mongoose_async_pools:pool_extra()) -> gen_server:request_id().
 request(Task, _Extra = #{host_type := HostType}) ->
     request_one(HostType, Task).
 
 request_one(HostType, {set_inbox, {LUser, LServer, LToBareJid}, Packet, Count, MsgId, Timestamp, Box}) ->
     Content = exml:to_binary(Packet),
-    Unique = [LUser, LServer, LToBareJid],
     Update = [MsgId, Box, Content, Count, Timestamp],
     Insert = [LUser, LServer, LToBareJid, MsgId, Box, Content, Count, Timestamp],
-    rdbms_queries:request_upsert(HostType, inbox_upsert, Insert, Update, Unique);
+    rdbms_queries:request_upsert(HostType, inbox_upsert, Insert, Update);
 request_one(HostType, {set_inbox_incr_unread, {LUser, LServer, LToBareJid}, Packet, MsgId, Timestamp, Incrs, Box}) ->
     Content = exml:to_binary(Packet),
-    Unique = [LUser, LServer, LToBareJid],
     Update = [MsgId, Box, Content, Incrs, Timestamp],
     Insert = [LUser, LServer, LToBareJid, MsgId, Box, Content, Incrs, Timestamp],
-    rdbms_queries:request_upsert(HostType, inbox_upsert_incr_unread, Insert, Update, Unique);
+    rdbms_queries:request_upsert(HostType, inbox_upsert_incr_unread, Insert, Update);
 request_one(HostType, {reset_unread, {LUser, LServer, LToBareJid}, undefined, TS}) ->
     mongoose_rdbms:execute_request(HostType, inbox_reset_unread, [LUser, LServer, LToBareJid, TS]);
 request_one(HostType, {reset_unread, {LUser, LServer, LToBareJid}, MsgId, TS}) ->

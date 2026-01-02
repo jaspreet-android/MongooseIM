@@ -38,7 +38,7 @@ escape_binary(Bin) when is_binary(Bin) ->
 
 -spec unescape_binary(binary()) -> binary().
 unescape_binary(<<"\\x", Bin/binary>>) ->
-    base16:decode(Bin);
+    binary:decode_hex(Bin);
 unescape_binary(Bin) when is_binary(Bin) ->
     Bin.
 
@@ -70,8 +70,15 @@ prepare(Connection, Name, _Table, _Fields, Statement) ->
     BinName = [atom_to_binary(Name, latin1)],
     ReplacedStatement = replace_question_marks(Statement),
     case epgsql:parse(Connection, BinName, ReplacedStatement, []) of
-        {ok, _} -> epgsql:describe(Connection, statement, BinName);
-        Error   -> Error
+        {ok, PreparedStatement} ->
+            %% If the statement is not executed for some reason, the transaction would remain open.
+            %% The safest way to fix this is to issue the Sync message.
+            %% Performance impact is minimal, because 'prepare' is called only once.
+            %% See https://www.postgresql.org/docs/current/protocol-flow.html for details
+            ok = epgsql:sync(Connection),
+            {ok, PreparedStatement};
+        {error, Reason} ->
+            {error, Reason}
     end.
 
 -spec execute(Connection :: term(), StatementRef :: term(), Params :: [term()],
@@ -89,7 +96,7 @@ db_opts(Options) ->
 
 tls_opts(#{tls := TLSOpts}) ->
     #{ssl => ssl_mode(TLSOpts),
-      ssl_opts => just_tls:make_ssl_opts(maps:remove(required, TLSOpts))};
+      ssl_opts => just_tls:make_client_opts(maps:remove(required, TLSOpts))};
 tls_opts(#{}) ->
     #{}.
 

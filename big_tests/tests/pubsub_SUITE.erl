@@ -22,6 +22,7 @@
                              require_rpc_nodes/1,
                              subhost_pattern/1,
                              rpc/4]).
+-import(domain_helper, [host_type/0]).
 
 %%--------------------------------------------------------------------
 %% Suite configuration
@@ -49,17 +50,26 @@ group_is_compatible(hometree_specific, OnlyNodetreeTree) -> OnlyNodetreeTree =:=
 group_is_compatible(_, _) -> true.
 
 base_groups() ->
-    [{basic, [parallel], basic_tests()},
-     {service_config, [parallel], service_config_tests()},
-     {node_config, [parallel], node_config_tests()},
-     {node_affiliations, [parallel], node_affiliations_tests()},
-     {manage_subscriptions, [parallel], manage_subscriptions_tests()},
+    [{basic, parallel_props(), basic_tests()},
+     {service_config, parallel_props(), service_config_tests()},
+     {node_config, parallel_props(), node_config_tests()},
+     {node_affiliations, parallel_props(), node_affiliations_tests()},
+     {manage_subscriptions, parallel_props(), manage_subscriptions_tests()},
      {collection, [sequence], collection_tests()},
-     {collection_config, [parallel], collection_config_tests()},
-     {debug_calls, [parallel], debug_calls_tests()},
-     {pubsub_item_publisher_option, [parallel], pubsub_item_publisher_option_tests()},
+     {collection_config, parallel_props(), collection_config_tests()},
+     {debug_calls, parallel_props(), debug_calls_tests()},
+     {pubsub_item_publisher_option, parallel_props(), pubsub_item_publisher_option_tests()},
      {hometree_specific, [sequence], hometree_specific_tests()},
-     {last_item_cache, [parallel], last_item_cache_tests()}].
+     {last_item_cache, parallel_props(), last_item_cache_tests()}].
+
+parallel_props() ->
+    case rpc(mim(), mongoose_rdbms, db_engine, [host_type()]) of
+        cockroachdb ->
+            %% Parallel pubsub tests are flaky on CockroachDB
+            [parallel, {repeat_until_all_ok, 5}];
+        _ ->
+            [parallel]
+    end.
 
 basic_tests() ->
     [
@@ -473,7 +483,7 @@ publish_with_max_items_test(Config) ->
               %% would always arrive before a retraction notification for an old item
               pubsub_tools:publish(Alice, <<"item2">>, Node, []),
               pubsub_tools:receive_item_notification(Bob, <<"item2">>, Node, []),
-              verify_item_retract(Node, <<"item1">>, escalus:wait_for_stanza(Bob)),
+              pubsub_tools:receive_retract_notification(Bob, <<"item1">>, Node, []),
 
               pubsub_tools:delete_node(Alice, Node, [])
       end).
@@ -594,7 +604,7 @@ retract_test(Config) ->
                                              [{<<"pubsub#notify_retract">>, <<"1">>}], []),
               pubsub_tools:subscribe(Bob, Node, []),
               pubsub_tools:retract_item(Alice, Node, <<"item2">>, []),
-              verify_item_retract(Node, <<"item2">>, escalus:wait_for_stanza(Bob)),
+              pubsub_tools:receive_retract_notification(Bob, <<"item2">>, Node, []),
               pubsub_tools:get_all_items(Bob, Node, [{expected_result, []}]),
 
               pubsub_tools:delete_node(Alice, Node, [])
@@ -1975,27 +1985,15 @@ default_config() ->
      {<<"pubsub#type">>, <<>>},
      {<<"pubsub#collection">>, []}].
 
-verify_item_retract({NodeAddr, NodeName}, ItemId, Stanza) ->
-    escalus:assert(is_message, Stanza),
-    NodeAddr = exml_query:attr(Stanza, <<"from">>),
-
-    [#xmlel{ attrs = [{<<"xmlns">>, ?NS_PUBSUB_EVENT}] } = Event]
-    = exml_query:subelements(Stanza, <<"event">>),
-
-    [#xmlel{ attrs = [{<<"node">>, NodeName}] } = Items]
-    = exml_query:subelements(Event, <<"items">>),
-
-    [#xmlel{ attrs = [{<<"id">>, ItemId}] }] = exml_query:subelements(Items, <<"retract">>).
-
 verify_config_event({NodeAddr, NodeName}, ConfigChange, Stanza) ->
     escalus:assert(is_message, Stanza),
     NodeAddr = exml_query:attr(Stanza, <<"from">>),
 
-    [#xmlel{ attrs = [{<<"xmlns">>, ?NS_PUBSUB_EVENT}] } = Event]
-    = exml_query:subelements(Stanza, <<"event">>),
+    [#xmlel{ attrs = #{<<"xmlns">> := ?NS_PUBSUB_EVENT} } = Event]
+        = exml_query:subelements(Stanza, <<"event">>),
 
-    [#xmlel{ attrs = [{<<"node">>, NodeName}] } = ConfigEl]
-    = exml_query:subelements(Event, <<"configuration">>),
+    [#xmlel{ attrs = #{<<"node">> := NodeName} } = ConfigEl]
+        = exml_query:subelements(Event, <<"configuration">>),
 
     Fields = exml_query:paths(ConfigEl, [{element, <<"x">>},
                                          {element, <<"field">>}]),

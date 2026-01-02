@@ -486,7 +486,7 @@ remove_private(Config) ->
     escalus:fresh_story(Config, [{alice, 1}], fun(Alice) ->
         %% Add some private data for Alice
         Element = #xmlel{name = <<"item">>,
-                         attrs = [{<<"xmlns">>, <<"alice:private_remove:ns">>}],
+                         attrs = #{<<"xmlns">> => <<"alice:private_remove:ns">>},
                          children = [#xmlcdata{ content = <<"Something to declare">> }]},
         SetPrivateResult = escalus:send_and_wait(Alice,
                              escalus_stanza:private_set(Element)),
@@ -947,7 +947,7 @@ retrieve_offline(Config) ->
             %% Well, jid_to_lower works for any binary :)
             AliceU = escalus_utils:jid_to_lower(escalus_client:username(Alice)),
             AliceS = escalus_utils:jid_to_lower(escalus_client:server(Alice)),
-            mongoose_helper:wait_until(
+            wait_helper:wait_until(
               fun() ->
                       mongoose_helper:successful_rpc(mod_offline_backend, count_offline_messages,
                                                      [host_type(), AliceU, AliceS, 10])
@@ -963,7 +963,7 @@ retrieve_offline(Config) ->
                 #{ "packet" => [{contains, Body}],
                     "from" => binary_to_list(From),
                     "to" => binary_to_list(To),
-                    "timestamp" => [{validate, fun validate_datetime/1}]}
+                    "timestamp" => [{validate, fun time_helper:validate_datetime/1}]}
             end, Expected),
 
             retrieve_and_validate_personal_data(
@@ -982,7 +982,7 @@ remove_offline(Config) ->
             %% Well, jid_to_lower works for any binary :)
             AliceU = escalus_utils:jid_to_lower(escalus_client:username(Alice)),
             AliceS = escalus_utils:jid_to_lower(escalus_client:server(Alice)),
-            mongoose_helper:wait_until(
+            wait_helper:wait_until(
               fun() ->
                       mongoose_helper:successful_rpc(mod_offline_backend, count_offline_messages,
                                                      [host_type(), AliceU, AliceS, 10])
@@ -1534,15 +1534,14 @@ retrieve_inbox_for_multiple_messages(Config) ->
 retrieve_logs(Config) ->
     escalus:fresh_story(Config, [{alice, 1}],
         fun(Alice) ->
-            User = string:to_lower(binary_to_list(escalus_client:username(Alice))),
-            Domain = string:to_lower(binary_to_list(escalus_client:server(Alice))),
-            JID = string:to_upper(binary_to_list(escalus_client:short_jid(Alice))),
+            User = string:lowercase(escalus_client:username(Alice)),
+            Domain = string:lowercase(escalus_client:server(Alice)),
+            JID = string:uppercase(binary_to_list(escalus_client:short_jid(Alice))),
             #{node := MIM2NodeName} = MIM2Node = distributed_helper:mim2(),
             mongoose_helper:successful_rpc(net_kernel, connect_node, [MIM2NodeName]),
             mongoose_helper:successful_rpc(MIM2Node, error_logger, error_msg,
                                            ["event=disturbance_in_the_force, jid=~s", [JID]]),
-            Dir = request_and_unzip_personal_data(list_to_binary(User), list_to_binary(Domain),
-                                                  Config),
+            Dir = request_and_unzip_personal_data(User, Domain, Config),
             Filename = filename:join(Dir, "logs-" ++ atom_to_list(MIM2NodeName) ++ ".txt"),
             {ok, Content} = file:read_file(Filename),
             {match, _} = re:run(Content, "disturbance_in_the_force")
@@ -1558,7 +1557,7 @@ assert_personal_data_via_rpc(Client, ExpectedPersonalDataEntries) ->
     %% We use wait_until here, because e.g. the deletion in ElasticSearch
     %% sometimes is applied with a delay (i.e. immediately after successful deletion
     %% the data retrieval still returned valid entries)
-    mongoose_helper:wait_until(
+    wait_helper:wait_until(
             fun() ->
                 get_personal_data_via_rpc(Client, ExpectedKeys)
             end, ExpectedPersonalDataEntries).
@@ -1762,12 +1761,12 @@ item_content(Data) ->
 
 item_content_xml(Data) ->
     #xmlel{name = <<"entry">>,
-           attrs = [{<<"xmlns">>, <<"http://www.w3.org/2005/Atom">>}],
+           attrs = #{<<"xmlns">> => <<"http://www.w3.org/2005/Atom">>},
            children = [#xmlcdata{content = Data}]}.
 
 send_and_assert_private_stanza(User, NS, Content) ->
     XML = #xmlel{ name = <<"fingerprint">>,
-                  attrs = [{<<"xmlns">>, NS}],
+                  attrs = #{<<"xmlns">> => NS},
                   children = [#xmlcdata{ content = Content }]},
     PrivateStanza = escalus_stanza:private_set(XML),
     escalus_client:send(User, PrivateStanza),
@@ -1777,28 +1776,6 @@ send_and_assert_is_chat_message(UserFrom, UserTo, Body) ->
     escalus:send(UserFrom, escalus_stanza:chat_to(UserTo, Body)),
     Msg = escalus:wait_for_stanza(UserTo),
     escalus:assert(is_chat_message, [Body], Msg).
-
-validate_datetime(TimeStr) ->
-    [Date, Time] = string:tokens(TimeStr, "T"),
-    validate_date(Date),
-    validate_time(Time).
-
-validate_date(Date) ->
-    [Y, M, D] = string:tokens(Date, "-"),
-    Date1 = {list_to_integer(Y), list_to_integer(M), list_to_integer(D)},
-    calendar:valid_date(Date1).
-
-validate_time(Time) ->
-  [T | _] = string:tokens(Time, "Z"),
-  validate_time1(T).
-
-
-validate_time1(Time) ->
-    [H, M, S] = string:tokens(Time, ":"),
-    check_list([{H, 24}, {M, 60}, {S, 60}]).
-
-check_list(List) ->
-    lists:all(fun({V, L}) -> I = list_to_integer(V), I >= 0 andalso I < L end, List).
 
 expected_header(mod_roster) -> ["jid", "name", "subscription",
                               "ask", "groups", "askmessage", "xs"].

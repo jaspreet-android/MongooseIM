@@ -418,7 +418,7 @@ process_iq_disco_items(MucHost, From, To, #iq{lang = Lang} = IQ) ->
     Rsm = jlib:rsm_decode(IQ),
     Res = IQ#iq{type = result,
                 sub_el = [#xmlel{name = <<"query">>,
-                                 attrs = [{<<"xmlns">>, ?NS_DISCO_ITEMS}],
+                                 attrs = #{<<"xmlns">> => ?NS_DISCO_ITEMS},
                                  children = iq_disco_items(MucHost, From, Lang, Rsm)}]},
     ejabberd_router:route(To, From, jlib:iq_to_xml(Res)).
 
@@ -602,12 +602,7 @@ start_supervisor(HostType) ->
 
 sup_spec(HostType) ->
     Proc = gen_mod:get_module_proc(HostType, ejabberd_mod_muc_sup),
-    {Proc,
-     {ejabberd_tmp_sup, start_link, [Proc, mod_muc_room]},
-     permanent,
-     infinity,
-     supervisor,
-     [ejabberd_tmp_sup]}.
+    ejabberd_sup:template_supervisor_spec(Proc, mod_muc_room).
 
 -spec stop_supervisor(jid:server()) -> ok | {error, Reason}
     when Reason :: not_found | restarting | running | simple_one_for_one.
@@ -630,8 +625,7 @@ process_packet(Acc, From, To, El, #{state := State}) ->
             route_to_room(MucHost, Room, {From, To, Acc, El}, State),
             Acc;
         _ ->
-            #xmlel{attrs = Attrs} = El,
-            Lang = xml:get_attr_s(<<"xml:lang">>, Attrs),
+            Lang = exml_query:attr(El, <<"xml:lang">>, <<>>),
             ErrText = <<"Access denied by service policy">>,
             ejabberd_router:route_error_reply(To, From, Acc,
                                               mongoose_xmpp_errors:forbidden(Lang, ErrText))
@@ -663,9 +657,7 @@ route_to_online_room(Pid, {From, To, Acc, Packet}) ->
 
 -spec get_registered_room_or_route_error(muc_host(), room(), from_to_packet(), state()) -> {ok, pid()} | {route_error, binary()}.
 get_registered_room_or_route_error(MucHost, Room, {From, To, Acc, Packet}, State) ->
-    #xmlel{name = Name, attrs = Attrs} = Packet,
-    Type = xml:get_attr_s(<<"type">>, Attrs),
-    case {Name, Type} of
+    case {Packet#xmlel.name, exml_query:attr(Packet, <<"type">>, <<>>)} of
         {<<"presence">>, <<>>} ->
             get_registered_room_or_route_error_from_presence(MucHost, Room, From, To, Acc, Packet, State);
         _ ->
@@ -753,8 +745,7 @@ route_by_nick(<<>>, {_, _, _, Packet} = Routed, State) ->
     #xmlel{name = Name} = Packet,
     route_by_type(Name, Routed, State);
 route_by_nick(_Nick, {From, To, Acc, Packet}, _State) ->
-    #xmlel{attrs = Attrs} = Packet,
-    case xml:get_attr_s(<<"type">>, Attrs) of
+    case exml_query:attr(Packet, <<"type">>) of
         <<"error">> ->
             Acc;
         <<"result">> ->
@@ -776,7 +767,7 @@ route_by_type(<<"iq">>, {From, To, Acc, Packet}, #muc_state{} = State) ->
             InfoXML = mongoose_disco:get_info(HostType, ?MODULE, <<>>, Lang),
             Res = IQ#iq{type = result,
                         sub_el = [#xmlel{name = <<"query">>,
-                                         attrs = [{<<"xmlns">>, XMLNS}],
+                                         attrs = #{<<"xmlns">> => XMLNS},
                                          children = IdentityXML ++ FeatureXML ++ InfoXML}]},
             ejabberd_router:route(To, From, jlib:iq_to_xml(Res));
         #iq{type = get, xmlns = ?NS_DISCO_ITEMS} = IQ ->
@@ -785,7 +776,7 @@ route_by_type(<<"iq">>, {From, To, Acc, Packet}, #muc_state{} = State) ->
             Result = iq_get_register_info(HostType, MucHost, From, Lang),
             Res = IQ#iq{type = result,
                         sub_el = [#xmlel{name = <<"query">>,
-                                         attrs = [{<<"xmlns">>, XMLNS}],
+                                         attrs = #{<<"xmlns">> => XMLNS},
                                          children = Result}]},
             ejabberd_router:route(To, From, jlib:iq_to_xml(Res));
         #iq{type = set,
@@ -796,7 +787,7 @@ route_by_type(<<"iq">>, {From, To, Acc, Packet}, #muc_state{} = State) ->
                 {result, IQRes} ->
                     Res = IQ#iq{type = result,
                                 sub_el = [#xmlel{name = <<"query">>,
-                                                 attrs = [{<<"xmlns">>, XMLNS}],
+                                                 attrs = #{<<"xmlns">> => XMLNS},
                                                  children = IQRes}]},
                     ejabberd_router:route(To, From, jlib:iq_to_xml(Res));
                 {error, Error} ->
@@ -806,13 +797,13 @@ route_by_type(<<"iq">>, {From, To, Acc, Packet}, #muc_state{} = State) ->
         #iq{type = get, xmlns = ?NS_VCARD = XMLNS, lang = Lang} = IQ ->
             Res = IQ#iq{type = result,
                         sub_el = [#xmlel{name = <<"vCard">>,
-                                         attrs = [{<<"xmlns">>, XMLNS}],
+                                         attrs = #{<<"xmlns">> => XMLNS},
                                          children = iq_get_vcard(Lang)}]},
             ejabberd_router:route(To, From, jlib:iq_to_xml(Res));
         #iq{type = get, xmlns = ?NS_MUC_UNIQUE} = IQ ->
            Res = IQ#iq{type = result,
                        sub_el = [#xmlel{name = <<"unique">>,
-                                        attrs = [{<<"xmlns">>, ?NS_MUC_UNIQUE}],
+                                        attrs = #{<<"xmlns">> => ?NS_MUC_UNIQUE},
                                         children = [iq_get_unique(From)]}]},
            ejabberd_router:route(To, From, jlib:iq_to_xml(Res));
         #iq{} ->
@@ -829,17 +820,16 @@ route_by_type(<<"message">>, {From, To, Acc, Packet},
                          access = {_, _, AccessAdmin, _}} = State) ->
     MucHost = To#jid.lserver,
     ServerHost = make_server_host(To, State),
-    #xmlel{attrs = Attrs} = Packet,
-    case xml:get_attr_s(<<"type">>, Attrs) of
+    case exml_query:attr(Packet, <<"type">>) of
         <<"error">> ->
             ok;
         _ ->
             case acl:match_rule(HostType, ServerHost, AccessAdmin, From) of
                 allow ->
-                    Msg = xml:get_path_s(Packet, [{elem, <<"body">>}, cdata]),
+                    Msg = exml_query:path(Packet, [{element, <<"body">>}, cdata], <<>>),
                     broadcast_service_message(MucHost, Msg);
                 _ ->
-                    Lang = xml:get_attr_s(<<"xml:lang">>, Attrs),
+                    Lang = exml_query:attr(Packet, <<"xml:lang">>, <<>>),
                     ErrTxt = <<"Only service administrators are allowed to send service messages">>,
                     Err = mongoose_xmpp_errors:forbidden(Lang, ErrTxt),
                     {Acc1, ErrorReply} = jlib:make_error_reply(Acc, Packet, Err),
@@ -933,7 +923,7 @@ default_host() ->
 identity(Lang) ->
     #{category => <<"conference">>,
       type => <<"text">>,
-      name => translate:translate(Lang, <<"Chatrooms">>)}.
+      name => service_translations:do(Lang, <<"Chatrooms">>)}.
 
 features() ->
     [?NS_DISCO_INFO, ?NS_DISCO_ITEMS, ?NS_MUC, ?NS_MUC_UNIQUE, ?NS_REGISTER, ?NS_RSM, ?NS_VCARD, ?NS_CONFERENCE].
@@ -957,16 +947,16 @@ room_to_item({{Name, _}, Pid}, MucHost, From, Lang) when is_pid(Pid) ->
          {item, Desc} ->
              {true,
               #xmlel{name = <<"item">>,
-                     attrs = [{<<"jid">>, jid:to_binary({Name, MucHost, <<>>})},
-                              {<<"name">>, Desc}]}};
+                     attrs = #{<<"jid">> => jid:to_binary({Name, MucHost, <<>>}),
+                               <<"name">> => Desc}}};
          _ ->
              false
      end;
 room_to_item({{Name, _}, _}, MucHost, _, _) ->
      {true,
      #xmlel{name = <<"item">>,
-            attrs = [{<<"jid">>, jid:to_binary({Name, MucHost, <<>>})},
-                     {<<"name">>, Name}]}
+            attrs = #{<<"jid">> => jid:to_binary({Name, MucHost, <<>>}),
+                      <<"name">> => Name}}
      }.
 record_to_simple(#muc_online_room{name_host = Room, pid = Pid}) ->
     {Room, Pid};
@@ -1041,7 +1031,7 @@ get_room_pos(Desired, [_ | Rooms], HeadPosition) ->
 %%      with the returned Name already created, nor mark the generated Name
 %%      as `<<"already used">>'.  But in practice, it is unique enough. See
 %%      http://xmpp.org/extensions/xep-0045.html#createroom-unique
--spec iq_get_unique(jid:jid()) -> jlib:xmlcdata().
+-spec iq_get_unique(jid:jid()) -> exml:cdata().
 iq_get_unique(From) ->
     Raw = [From, erlang:unique_integer(), mongoose_bin:gen_from_crypto()],
     #xmlcdata{content = mongoose_bin:encode_crypto(term_to_binary(Raw))}.
@@ -1059,15 +1049,15 @@ iq_get_register_info(HostType, MucHost, From, Lang) ->
             {ok, N} ->
                 {N, [#xmlel{name = <<"registered">>}]}
         end,
-    ClientReqText = translate:translate(
+    ClientReqText = service_translations:do(
                       Lang, <<"You need a client that supports x:data to register the nickname">>),
     ClientReqEl = #xmlel{name = <<"instructions">>,
                          children = [#xmlcdata{content = ClientReqText}]},
-    EnterNicknameText = translate:translate(Lang, <<"Enter nickname you want to register">>),
-    TitleText = <<(translate:translate(Lang, <<"Nickname Registration at ">>))/binary,
+    EnterNicknameText = service_translations:do(Lang, <<"Enter nickname you want to register">>),
+    TitleText = <<(service_translations:do(Lang, <<"Nickname Registration at ">>))/binary,
                   MucHost/binary>>,
     NickField = #{type => <<"text-single">>,
-                  label => translate:translate(Lang, <<"Nickname">>),
+                  label => service_translations:do(Lang, <<"Nickname">>),
                   var => <<"nick">>,
                   values => [Nick]},
     Registered ++ [ClientReqEl, mongoose_data_forms:form(#{title => TitleText,
@@ -1113,8 +1103,8 @@ iq_set_unregister_info(HostType, MucHost, From, _Lang) ->
                               jid:jid(), exml:element(), ejabberd:lang())
             -> {'error', exml:element()} | {'result', []}.
 process_iq_register_set(HostType, MucHost, From, SubEl, Lang) ->
-    case xml:get_subtag(SubEl, <<"remove">>) of
-        false ->
+    case exml_query:subelement(SubEl, <<"remove">>) of
+        undefined ->
             case mongoose_data_forms:find_and_parse_form(SubEl) of
                 #{type := <<"cancel">>} ->
                     {result, []};
@@ -1146,7 +1136,7 @@ iq_get_vcard(Lang) ->
      #xmlel{name = <<"URL">>, children = [#xmlcdata{content = ?MONGOOSE_URI}]},
      #xmlel{name = <<"DESC">>,
             children = [#xmlcdata{content =
-                                  <<(translate:translate(Lang, <<"ejabberd MUC module">>))/binary,
+                                  <<(service_translations:do(Lang, <<"ejabberd MUC module">>))/binary,
                                     "\nCopyright (c) 2003-2011 ProcessOne">>}]}].
 
 -spec broadcast_service_message(muc_host(), binary() | string()) -> ok.

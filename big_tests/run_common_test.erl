@@ -1,8 +1,8 @@
 %% During dev you would use something similar to:
-%% TEST_HOSTS="mim" ./tools/test.sh -c false -s false -p odbc_mssql_mnesia
+%% TEST_HOSTS="mim" ./tools/test.sh -c false -s false -p pgsql_cets
 %%
 %% If you also want to start just mim1 node use:
-%% DEV_NODES="mim1" TEST_HOSTS="mim" ./tools/test.sh -c false -s false -p odbc_mssql_mnesia
+%% DEV_NODES="mim1" TEST_HOSTS="mim" ./tools/test.sh -c false -s false -p pgsql_cets
 %%
 %% TEST_HOSTS variable contains host names from hosts in big_tests/test.config.
 %% DEV_NODES variable contains release names from profiles in rebar.config.
@@ -12,7 +12,7 @@
 %% Valid DEV_NODES are mim1, mim2, mim3, fed1, reg1.
 %%
 %% Example with two nodes:
-%% DEV_NODES="mim1 mim2" TEST_HOSTS="mim mim2" ./tools/test.sh -c false -s false -p odbc_mssql_mnesia
+%% DEV_NODES="mim1 mim2" TEST_HOSTS="mim mim2" ./tools/test.sh -c false -s false -p pgsql_cets
 %%
 %% Environment variable PRESET_ENABLED is true by default.
 %% PRESET_ENABLED=false disables preset application and forces to run
@@ -268,7 +268,7 @@ enable_preset(Props, Name, PresetVars, N, Tests) ->
                           [N, Tests, Name]).
 
 %% Specify just some nodes to run the tests on:
-%% TEST_HOSTS="mim" ./tools/test.sh -p odbc_mssql_mnesia
+%% TEST_HOSTS="mim" ./tools/test.sh -p pgsql_cets
 maybe_enable_preset_on_node(Node, PresetVars, HostVars, HostName) ->
     case is_test_host_enabled(HostName) of
         true ->
@@ -403,9 +403,11 @@ analyze(_Props, CoverOpts, [CoverNode|_] = Nodes) ->
     report_time("Export merged cover data", fun() ->
                         cover_export(CoverNode, "/tmp/mongoose_combined.coverdata")
 		end),
-    case os:getenv("GITHUB_RUN_ID") of
-        false ->
-            make_html(CoverNode, modules_to_analyze(CoverNode, CoverOpts));
+    case {os:getenv("GITHUB_RUN_ID"), os:getenv("CIRCLECI")} of
+        {false, false} ->
+            Mods = modules_to_analyze(CoverNode, CoverOpts),
+            Txt = "Export HTML report for " ++ integer_to_list(length(Mods)) ++ " modules",
+            report_time(Txt, fun() -> make_html(CoverNode, Mods) end);
         _ ->
             ok
     end,
@@ -434,25 +436,35 @@ make_html(CoverNode, Modules) ->
     file:make_dir(CoverageDir),
     {ok, File} = file:open(FilePath, [write]),
     file:write(File, get_cover_header()),
-    Fun = fun(Module, {CAcc, NCAcc}) ->
+    Fun = fun(Module, {CAcc, NCAcc, Skipped, Failed, OK}) ->
                   FileName = lists:flatten(io_lib:format("~s.COVER.html",[Module])),
 
                   %% We assume that import_code_paths/1 was called earlier
                   case cover_analyse(CoverNode, Module) of
                       {ok, {Module, {C, NC}}} ->
-                          file:write(File, row(atom_to_list(Module), C, NC, percent(C,NC),"coverage/"++FileName)),
-                          FilePathC = filename:join([CoverageDir, FileName]),
-                          cover_analyse_to_html_file(CoverNode, Module, FilePathC),
-                          {CAcc + C, NCAcc + NC};
+                          FilePathC = filename:join([Root, CoverageDir, FileName]),
+                          case cover_analyse_to_html_file(CoverNode, Module, FilePathC) of
+                              {ok, _} ->
+                                  file:write(File, row(atom_to_list(Module), C, NC, percent(C,NC),"coverage/"++FileName)),
+                                  {CAcc + C, NCAcc + NC, Skipped, Failed, OK + 1};
+                              Other ->
+                                  %% Do not report link, if the destination file is not written
+                                  file:write(File, row_no_link(atom_to_list(Module), C, NC, percent(C,NC))),
+                                  error_logger:error_msg("issue=cover_analyse_to_html_file_failed module=~p reason=~p",
+                                                         [Module, Other]),
+                                  {CAcc + C, NCAcc + NC, Skipped, Failed + 1, OK}
+                          end;
                       Reason ->
                           error_logger:error_msg("issue=cover_analyse_failed module=~p reason=~p",
                                                  [Module, Reason]),
-                          {CAcc, NCAcc}
+                          {CAcc, NCAcc, Skipped + 1, Failed, OK}
                   end
           end,
-    {CSum, NCSum} = lists:foldl(Fun, {0, 0}, Modules),
+    {CSum, NCSum, Skipped2, Failed2, OK2} = lists:foldl(Fun, {0, 0, 0, 0, 0}, Modules),
     file:write(File, row("Summary", CSum, NCSum, percent(CSum, NCSum), "#")),
-    file:close(File).
+    file:close(File),
+    report_progress("make_html: ok - ~p, skipped - ~p, failed - ~p~n", [OK2, Skipped2, Failed2]),
+    ok.
 
 get_hosts_to_enable_preset(Props) ->
     [Host || Host <- get_all_hosts(Props), should_enable_preset(host_cluster(Host))].
@@ -476,6 +488,17 @@ row(Row, C, NC, Percent, Path) ->
     [
         "<tr>",
         "<td><a href='", Path, "'>", Row, "</a></td>",
+        "<td>", integer_to_list(Percent), "%</td>",
+        "<td>", integer_to_list(C), "</td>",
+        "<td>", integer_to_list(NC), "</td>",
+        "<td>", integer_to_list(C+NC), "</td>",
+        "</tr>\n"
+    ].
+
+row_no_link(Row, C, NC, Percent) ->
+    [
+        "<tr>",
+        "<td>", Row, "</td>",
         "<td>", integer_to_list(Percent), "%</td>",
         "<td>", integer_to_list(C), "</td>",
         "<td>", integer_to_list(NC), "</td>",
@@ -785,7 +808,7 @@ block_node(Name, BlockName, Props) ->
     rpc_call(Node, erlang, set_cookie, [BlockNode, make_bad_cookie(Name, BlockNode)]),
     rpc_call(Node, erlang, disconnect_node, [BlockNode]),
     Cond = fun() -> lists:member(BlockNode, rpc_call(Node, erlang, nodes, [])) end,
-    mongoose_helper:wait_until(Cond, false).
+    wait_helper:wait_until(Cond, false).
 
 unblock_node(Name, BlockName, Props) ->
     Node = host_name_to_node(Name, Props),

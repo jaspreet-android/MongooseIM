@@ -15,7 +15,7 @@ Only RDBMS storage is supported, but `rdbms` means flushes to DB are synchronous
 
 Regular `rdbms` has worse performance characteristics, but it has better consistency properties, as events aren't lost nor reordered. `rdbms_async` processes events asynchronously and potentially unloading a lot of aggregation from the DB. Like the case of the asynchronous workers for MAM, it is the preferred method, with the risk messages being lost on an ungraceful shutdown.
 
-#### `modules.mod_inbox.async_writer.pool_size`
+### `modules.mod_inbox.async_writer.pool_size`
 * **Syntax:** non-negative integer
 * **Default:** `2 * erlang:system_info(schedulers_online)`
 * **Example:** `modules.mod_inbox.async_writer.pool_size = 32`
@@ -34,30 +34,27 @@ A list of supported inbox boxes by the server. This can be used by clients to cl
 
     If the asynchronous backend is configured, automatic removals become moves to the `bin` box, also called "Trash bin". This is to ensure eventual consistency. Then the bin can be emptied, either on a [user request](../open-extensions/inbox.md#examples-emptying-the-trash-bin), with the `mongooseimctl inbox` command, through the [GraphQL API](../graphql-api/Admin-GraphQL.md), or through the [REST API](../rest-api/Administration-backend.md).
 
-#### `modules.mod_inbox.bin_ttl`
+### `modules.mod_inbox.bin_ttl`
 * **Syntax:** non-negative integer, expressed in days.
 * **Default:** `30`
 * **Example:** `modules.mod_inbox.bin_ttl = 7`
 
 How old entries in the bin can be before the automatic bin cleaner collects them. A value of `7` would mean that entries that have been in the bin for more than 7 days will be cleaned on the next bin collection.
 
-#### `modules.mod_inbox.bin_clean_after`
+### `modules.mod_inbox.bin_clean_after`
 * **Syntax:** non-negative integer, expressed in hours
 * **Default:** `1`
 * **Example:** `modules.mod_inbox.bin_clean_after = 24`
 
 How often the automatic garbage collection runs over the bin.
 
-#### `modules.mod_inbox.delete_domain_limit`
+### `modules.mod_inbox.delete_domain_limit`
 
 * **Syntax:** non-negative integer or the string `"infinity"`
 * **Default:** `"infinity"`
 * **Example:** `modules.mod_inbox.delete_domain_limit = 10000`
 
 Domain deletion can be an expensive operation, as it requires to delete potentially many thousands of records from the DB. By default, the delete operation deletes everything in a transaction, but it might be desired, to handle timeouts and table locks more gracefully, to delete the records in batches. This limit establishes the size of the batch.
-
-!!! Note
-    Not supported by MSSQL.
 
 ### `modules.mod_inbox.reset_markers`
 * **Syntax:** array of strings, out of `"displayed"`, `"received"`, `"acknowledged"`
@@ -92,6 +89,7 @@ Only changes that affect the user directly will be stored in their inbox.
 
 Use this option when `muclight` is enabled.
 If true, the inbox conversation is removed for a user when they are removed from the groupchat.
+Enabling this option will also clear all inbox entries associated with a destroyed room.
 
 ### `modules.mod_inbox.iqdisc.type`
 * **Syntax:** string, one of `"one_queue"`, `"no_queue"`, `"queues"`, `"parallel"`
@@ -100,7 +98,7 @@ If true, the inbox conversation is removed for a user when they are removed from
 Strategy to handle incoming stanzas. For details, please refer to
 [IQ processing policies](../configuration/Modules.md#iq-processing-policies).
 
-#### `modules.mod_inbox.max_result_limit`
+### `modules.mod_inbox.max_result_limit`
 * **Syntax:** the string `"infinity"` or a positive integer
 * **Default:** `"infinity"`
 * **Example:** `modules.mod_inbox.max_result_limit = 100`
@@ -115,13 +113,12 @@ The special value `infinity` means no limit.
 Inbox currently supports the following DBs:
 
 * MySQL via native driver
-* PgSQL via native driver
-* MSSQL via ODBC driver
+* PostgreSQL via native driver
 
 ## Legacy MUC support
 Inbox comes with support for the legacy MUC as well. It stores all groupchat messages sent to
 room in each sender's and recipient's inboxes and private messages. Currently it is not possible to
-configure it to store system messages like [subject](https://xmpp.org/extensions/xep-0045.html#enter-subject) 
+configure it to store system messages like [subject](https://xmpp.org/extensions/xep-0045.html#enter-subject)
 or [affiliation](https://xmpp.org/extensions/xep-0045.html#affil) change.
 
 

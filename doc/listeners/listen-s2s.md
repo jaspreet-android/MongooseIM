@@ -8,27 +8,22 @@ The recommended port number for an S2S listener is 5269 [as registered in the XM
 
 ## Configuration options
 
-### `listen.s2s.shaper`
-* **Syntax:** string, name of the shaper rule or `"none"`
-* **Default:** `"none"` - no shaper
-* **Example:** `shaper = "s2s_shaper"`
+For each S2S listener, all the [general](../configuration/listen.md#general-listener-options) and [XMPP](../configuration/listen.md#xmpp-listener-options) options are accepted.
 
-Name of the rule that determines what traffic shaper is used to limit the incoming XMPP traffic to prevent the server from being flooded with incoming data. The rule referenced here needs to be defined in the [`access`](../configuration/access.md) config section, and it should return the shaper name or the value `"none"`.
-
-## TLS options for S2S
-
-S2S connections do not use TLS encryption unless enabled with the `use_starttls` option in the `s2s` section.
-You can specify additional options of the TLS encryption in the `tls` subsection of the listener configuration. Accepted options are: `verify_mode`, `certfile`, `cacertfile`, `dhfile`, `ciphers` and `protocol_options`. They have the same semantics as the corresponding [c2s options](listen-c2s.md#tls-options-for-c2s) for `fast_tls`.
+Additionally, to enable TLS, a TOML subsection called `tls` has to be present in the listener options.
+To disable TLS, make sure that the section is not present, and no TLS options are set.
+You can specify additional options of the TLS encryption in the `tls` subsection.
+They have the same semantics as the corresponding [c2s options](listen-c2s.md#tls-options-for-c2s).
 
 ## S2S listener configuration example
 
 The following section configures an S2S listener with some basic settings set up.
-The `s2s_shaper` access rule is used, which requires a definition in the [`access`](../configuration/access.md) section.
+The `fast` shaper is used, which requires a definition in the [`shaper`](../configuration/shaper.md) section (the default configuration file includes it).
 
 ```toml
 [[listen.s2s]]
   port = 5269
-  shaper = "s2s_shaper"
+  shaper = "fast"
   max_stanza_size = 131072
   tls.dhfile = "dh_server.pem"
 ```

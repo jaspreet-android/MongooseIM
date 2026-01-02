@@ -60,8 +60,7 @@
          handle_info/2,
          handle_call/3,
          handle_cast/2,
-         terminate/2,
-         code_change/3]).
+         terminate/2]).
 
 %% mongoose_packet_handler export
 -export([process_packet/5]).
@@ -318,7 +317,7 @@ handle_route(Acc, From, To) ->
 %%--------------------------------------------------------------------
 start_link(HostType, Opts) ->
     Proc = gen_mod:get_module_proc(HostType, ?PROCNAME),
-    gen_server:start_link({local, Proc}, ?MODULE, [HostType, Opts], []).
+    gen_server:start_link({local, Proc}, ?MODULE, [HostType, Opts], [{hibernate_after, 0}]).
 
 init([HostType, Opts]) ->
     process_flag(trap_exit, true),
@@ -326,8 +325,6 @@ init([HostType, Opts]) ->
     maybe_register_search(Search, HostType, Opts),
     {ok, #state{host_type = HostType, search = Search}}.
 
-handle_call(get_state, _From, State) ->
-    {reply, {ok, State}, State};
 handle_call(stop, _From, State) ->
     {stop, normal, ok, State};
 handle_call(_Request, _From, State) ->
@@ -338,9 +335,6 @@ handle_info(_, State) ->
 
 handle_cast(_Request, State) ->
     {noreply, State}.
-
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
 
 terminate(_Reason, #state{host_type = HostType, search = Search}) ->
     maybe_unregister_search(Search, HostType).
@@ -354,7 +348,7 @@ process_local_iq(Acc, _From, _To, IQ = #iq{type = get}, _Extra) ->
     DescCData = #xmlcdata{content = [<<"MongooseIM XMPP Server">>,
                                      <<"\nCopyright (c) Erlang Solutions Ltd.">>]},
     {Acc, IQ#iq{type = result,
-          sub_el = [#xmlel{name = <<"vCard">>, attrs = [{<<"xmlns">>, ?NS_VCARD}],
+          sub_el = [#xmlel{name = <<"vCard">>, attrs = #{<<"xmlns">> => ?NS_VCARD},
                            children = [#xmlel{name = <<"FN">>,
                                               children = [#xmlcdata{content = <<"MongooseIM">>}]},
                                        #xmlel{name = <<"URL">>,
@@ -501,7 +495,7 @@ do_route(HostType, _LServer, From, To, Acc,
     InfoXML = mongoose_disco:get_info(HostType, ?MODULE, <<>>, <<>>),
     ResIQ = IQ#iq{type = result,
                   sub_el = [#xmlel{name = <<"query">>,
-                                   attrs = [{<<"xmlns">>, ?NS_DISCO_INFO}],
+                                   attrs = #{<<"xmlns">> => ?NS_DISCO_INFO},
                                    children = IdentityXML ++ FeatureXML ++ InfoXML}]},
     ejabberd_router:route(To, From, Acc, jlib:iq_to_xml(ResIQ));
 do_route(_HostType, _LServer, From, To, Acc,
@@ -513,14 +507,14 @@ do_route(_HostType, _LServer, From, To, Acc,
     ResIQ =
         IQ#iq{type = result,
               sub_el = [#xmlel{name = <<"query">>,
-                               attrs = [{<<"xmlns">>, ?NS_DISCO_ITEMS}]}]},
+                               attrs = #{<<"xmlns">> => ?NS_DISCO_ITEMS}}]},
     ejabberd_router:route(To, From, Acc, jlib:iq_to_xml(ResIQ));
 do_route(_HostType, _LServer, From, To, Acc,
          #iq{type = get, xmlns = ?NS_VCARD} = IQ) ->
     ResIQ =
         IQ#iq{type = result,
               sub_el = [#xmlel{name = <<"vCard">>,
-                               attrs = [{<<"xmlns">>, ?NS_VCARD}],
+                               attrs = #{<<"xmlns">> => ?NS_VCARD},
                                children = iq_get_vcard()}]},
     ejabberd_router:route(To, From, Acc, jlib:iq_to_xml(ResIQ));
 do_route(_HostType, _LServer, From, To, Acc, _IQ) ->
@@ -530,16 +524,16 @@ do_route(_HostType, _LServer, From, To, Acc, _IQ) ->
 make_search_form_result_iq(IQ, Elements) ->
     IQ#iq{type = result,
           sub_el = [#xmlel{name = <<"query">>,
-                           attrs = [{<<"xmlns">>, ?NS_SEARCH}],
+                           attrs = #{<<"xmlns">> => ?NS_SEARCH},
                            children = Elements
                           }]}.
 
 search_instructions(Lang) ->
-    Text = translate:translate(Lang, <<"You need an x:data capable client to search">>),
-    #xmlel{name = <<"instructions">>, attrs = [], children = [#xmlcdata{content = Text}]}.
+    Text = service_translations:do(Lang, <<"You need an x:data capable client to search">>),
+    #xmlel{name = <<"instructions">>, children = [#xmlcdata{content = Text}]}.
 
 search_form(JID, SearchFields, Lang) ->
-    Title = <<(translate:translate(Lang, <<"Search users in ">>))/binary,
+    Title = <<(service_translations:do(Lang, <<"Search users in ">>))/binary,
               (jid:to_binary(JID))/binary>>,
     Instructions = <<"Fill in fields to search for any matching Jabber User">>,
     Fields = lists:map(fun ({X, Y}) -> ?TLFIELD(<<"text-single">>, X, Y) end, SearchFields),
@@ -569,7 +563,7 @@ make_search_result_iq(IQ, SearchResult, RSMOutEls) ->
     IQ#iq{
         type = result,
         sub_el = [#xmlel{name = <<"query">>,
-                         attrs = [{<<"xmlns">>, ?NS_SEARCH}],
+                         attrs = #{<<"xmlns">> => ?NS_SEARCH},
                          children = [Form | RSMOutEls]}
                  ]}.
 
@@ -587,10 +581,10 @@ features() ->
 identity(Lang) ->
     #{category => <<"directory">>,
       type => <<"user">>,
-      name => translate:translate(Lang, <<"vCard User Search">>)}.
+      name => service_translations:do(Lang, <<"vCard User Search">>)}.
 
 search_result(HostType, LServer, Lang, JID, Data, RSMIn) ->
-    Title = translate:translate(Lang, <<"Search Results for ", (jid:to_binary(JID))/binary>>),
+    Title = service_translations:do(Lang, <<"Search Results for ", (jid:to_binary(JID))/binary>>),
     ReportedFields = mod_vcard_backend:search_reported_fields(HostType, LServer, Lang),
     Results1 = mod_vcard_backend:search(HostType, LServer, maps:to_list(Data)),
     Results2 = lists:filtermap(
@@ -701,26 +695,26 @@ search_result_get_jid(Fields) ->
     [JID || #{var := <<"jid">>, values := [JID]} <- Fields].
 
 parse_vcard(LUser, VHost, VCARD) ->
-    FN       = xml:get_path_s(VCARD, [{elem, <<"FN">>}, cdata]),
-    Family   = xml:get_path_s(VCARD, [{elem, <<"N">>},
-                                      {elem, <<"FAMILY">>}, cdata]),
-    Given    = xml:get_path_s(VCARD, [{elem, <<"N">>},
-                                      {elem, <<"GIVEN">>}, cdata]),
-    Middle   = xml:get_path_s(VCARD, [{elem, <<"N">>},
-                                      {elem, <<"MIDDLE">>}, cdata]),
-    Nickname = xml:get_path_s(VCARD, [{elem, <<"NICKNAME">>}, cdata]),
-    BDay     = xml:get_path_s(VCARD, [{elem, <<"BDAY">>}, cdata]),
-    CTRY     = xml:get_path_s(VCARD, [{elem, <<"ADR">>},
-                                      {elem, <<"CTRY">>}, cdata]),
-    Locality = xml:get_path_s(VCARD, [{elem, <<"ADR">>},
-                                      {elem, <<"LOCALITY">>}, cdata]),
-    EMail1   = xml:get_path_s(VCARD, [{elem, <<"EMAIL">>},
-                                      {elem, <<"USERID">>}, cdata]),
-    EMail2   = xml:get_path_s(VCARD, [{elem, <<"EMAIL">>}, cdata]),
-    OrgName  = xml:get_path_s(VCARD, [{elem, <<"ORG">>},
-                                      {elem, <<"ORGNAME">>}, cdata]),
-    OrgUnit  = xml:get_path_s(VCARD, [{elem, <<"ORG">>},
-                                      {elem, <<"ORGUNIT">>}, cdata]),
+    FN       = exml_query:path(VCARD, [{element, <<"FN">>}, cdata], <<>>),
+    Family   = exml_query:path(VCARD, [{element, <<"N">>},
+                                       {element, <<"FAMILY">>}, cdata], <<>>),
+    Given    = exml_query:path(VCARD, [{element, <<"N">>},
+                                       {element, <<"GIVEN">>}, cdata], <<>>),
+    Middle   = exml_query:path(VCARD, [{element, <<"N">>},
+                                       {element, <<"MIDDLE">>}, cdata], <<>>),
+    Nickname = exml_query:path(VCARD, [{element, <<"NICKNAME">>}, cdata], <<>>),
+    BDay     = exml_query:path(VCARD, [{element, <<"BDAY">>}, cdata], <<>>),
+    CTRY     = exml_query:path(VCARD, [{element, <<"ADR">>},
+                                       {element, <<"CTRY">>}, cdata], <<>>),
+    Locality = exml_query:path(VCARD, [{element, <<"ADR">>},
+                                       {element, <<"LOCALITY">>}, cdata], <<>>),
+    EMail1   = exml_query:path(VCARD, [{element, <<"EMAIL">>},
+                                       {element, <<"USERID">>}, cdata], <<>>),
+    EMail2   = exml_query:path(VCARD, [{element, <<"EMAIL">>}, cdata], <<>>),
+    OrgName  = exml_query:path(VCARD, [{element, <<"ORG">>},
+                                       {element, <<"ORGNAME">>}, cdata], <<>>),
+    OrgUnit  = exml_query:path(VCARD, [{element, <<"ORG">>},
+                                       {element, <<"ORGUNIT">>}, cdata], <<>>),
     EMail = case EMail1 of
                 <<"">> -> EMail2;
                 _ -> EMail1

@@ -53,7 +53,9 @@
          deny_config_change_that_conflicts_with_schema/1,
          assorted_config_doesnt_lead_to_duplication/1,
          remove_and_add_users/1,
+         multiple_owner_change/1,
          explicit_owner_change/1,
+         explicit_owner_handover/1,
          implicit_owner_change/1,
          edge_case_owner_change/1,
          adding_wrongly_named_user_triggers_infinite_loop/1
@@ -179,6 +181,8 @@ groups() ->
                               assorted_config_doesnt_lead_to_duplication,
                               remove_and_add_users,
                               explicit_owner_change,
+                              explicit_owner_handover,
+                              multiple_owner_change,
                               implicit_owner_change,
                               edge_case_owner_change,
                               adding_wrongly_named_user_triggers_infinite_loop
@@ -298,6 +302,8 @@ muc_light_opts(block_user) ->
     #{all_can_invite => true};
 muc_light_opts(blocking_disabled) ->
     #{blocking => false};
+muc_light_opts(multiple_owner_change) ->
+    #{allow_multiple_owners => true};
 muc_light_opts(_) ->
     #{}.
 
@@ -424,7 +430,7 @@ disco_rooms_rsm(Config) ->
             ProperJID = exml_query:attr(Item, <<"jid">>),
 
             RSM = #xmlel{ name = <<"set">>,
-                          attrs = [{<<"xmlns">>, ?NS_RSM}],
+                          attrs = #{<<"xmlns">> => ?NS_RSM},
                           children = [ #xmlel{ name = <<"max">>,
                                                children = [#xmlcdata{ content = <<"10">> }] },
                                        #xmlel{ name = <<"before">> } ]  },
@@ -440,7 +446,7 @@ disco_rooms_rsm(Config) ->
             BadAfter = #xmlel{ name = <<"after">>,
                                children = [#xmlcdata{ content = <<"oops@muclight.localhost">> }] },
             RSM2 = #xmlel{ name = <<"set">>,
-                          attrs = [{<<"xmlns">>, ?NS_RSM}],
+                          attrs = #{<<"xmlns">> => ?NS_RSM},
                           children = [ #xmlel{ name = <<"max">>,
                                                children = [#xmlcdata{ content = <<"10">> }] },
                                        BadAfter ]  },
@@ -456,7 +462,7 @@ rooms_in_rosters(Config) ->
             AliceU = escalus_utils:jid_to_lower(escalus_client:username(Alice)),
             AliceS = escalus_utils:jid_to_lower(escalus_client:server(Alice)),
             escalus:send(Alice, escalus_stanza:roster_get()),
-            mongoose_helper:wait_until(
+            wait_helper:wait_until(
                 fun() ->
                     distributed_helper:rpc(
                         distributed_helper:mim(),
@@ -792,6 +798,14 @@ remove_and_add_users(Config) ->
             assert_cache_hit_event(TS, 1, room_bin_jid(?ROOM))
         end).
 
+multiple_owner_change(Config) ->
+    escalus:story(Config, [{alice, 1}, {bob, 1}, {kate, 1}], fun(Alice, Bob, Kate) ->
+            AffUsersChanges2 = [{Bob, owner}],
+            escalus:send(Alice, stanza_aff_set(?ROOM, AffUsersChanges2)),
+            verify_aff_bcast([{Alice, owner}, {Bob, owner}, {Kate, member}], AffUsersChanges2),
+            escalus:assert(is_iq_result, escalus:wait_for_stanza(Alice))
+        end).
+
 explicit_owner_change(Config) ->
     escalus:story(Config, [{alice, 1}, {bob, 1}, {kate, 1}], fun(Alice, Bob, Kate) ->
             AffUsersChanges1 = [{Bob, none}, {Alice, none}, {Kate, owner}],
@@ -799,6 +813,16 @@ explicit_owner_change(Config) ->
             verify_aff_bcast([{Kate, owner}], AffUsersChanges1),
             escalus:assert(is_iq_result, escalus:wait_for_stanza(Alice))
         end).
+
+explicit_owner_handover(Config) ->
+    % check that Alice looses ownership when Kate is set to owner
+    escalus:story(Config, [{alice, 1}, {bob, 1}, {kate, 1}], fun(Alice, Bob, Kate) ->
+        ReqAffUsersChanges = [{Kate, owner}],
+        escalus:send(Alice, stanza_aff_set(?ROOM, ReqAffUsersChanges)),
+        ExpectedAffUserChanges = [{Alice, member} | ReqAffUsersChanges],
+        verify_aff_bcast([{Kate, owner}, {Alice, member}, {Bob, member}], ExpectedAffUserChanges),
+        escalus:assert(is_iq_result, escalus:wait_for_stanza(Alice))
+    end).
 
 implicit_owner_change(Config) ->
     escalus:story(Config, [{alice, 1}, {bob, 1}, {kate, 1}], fun(Alice, Bob, Kate) ->
@@ -1032,7 +1056,7 @@ verify_blocklist(Query, ProperBlocklist) ->
     BlockedRooms = exml_query:subelements(Query, <<"room">>),
     BlockedUsers = exml_query:subelements(Query, <<"user">>),
     BlockedItems = [{list_to_atom(binary_to_list(What)), list_to_atom(binary_to_list(Action)), Who}
-                    || #xmlel{name = What, attrs = [{<<"action">>, Action}],
+                    || #xmlel{name = What, attrs = #{<<"action">> := Action},
                               children = [#xmlcdata{ content = Who }]}
                        <- BlockedRooms ++ BlockedUsers],
     ProperBlocklistLen = length(ProperBlocklist),

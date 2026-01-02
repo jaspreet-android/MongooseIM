@@ -41,14 +41,16 @@ init(_Id, _Opts) ->
     {ok, #{}}.
 
 %% @doc Called before init_per_suite is called.
-pre_init_per_suite(Suite,Config,State) ->
+pre_init_per_suite(Suite, [_|_] = Config, State) ->
     Preset = case application:get_env(common_test, test_label) of
                  {ok, Value} -> Value;
                  _ -> undefined
              end,
     DataDir = path_helper:data_dir(Suite, Config),
     NewConfig = [{preset, Preset}, {mim_data_dir, DataDir} | Config],
-    {NewConfig, State}.
+    {NewConfig, State};
+pre_init_per_suite(_Suite, SkipOrFail, State) ->
+    {SkipOrFail, State}.
 
 %% @doc Called after init_per_suite.
 post_init_per_suite(_Suite, _Config, Return, State) ->
@@ -64,7 +66,7 @@ post_end_per_suite(Suite, Config, Return, State) ->
     {Return, State}.
 
 %% @doc Called before each init_per_group.
-pre_init_per_group(Group,Config,State) ->
+pre_init_per_group(_Group,Config,State) ->
     {Config, State}.
 
 %% @doc Called after each init_per_group.
@@ -76,15 +78,15 @@ pre_end_per_group(_Group,Config,State) ->
     {Config, State}.
 
 %% @doc Called after each end_per_group.
-post_end_per_group(Group,_Config,Return,State) ->
+post_end_per_group(_Group,_Config,Return,State) ->
     {Return, State}.
 
 %% @doc Called before each test case.
-pre_init_per_testcase(TC,Config,State) ->
+pre_init_per_testcase(_TC,Config,State) ->
     {Config, State}.
 
 %% @doc Called after each test case.
-post_end_per_testcase(TC,_Config,Return,State) ->
+post_end_per_testcase(_TC,_Config,Return,State) ->
     {Return, State}.
 
 %% @doc Called after post_init_per_suite, post_end_per_suite, post_init_per_group,

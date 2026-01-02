@@ -43,10 +43,10 @@ extend_message(_HostType, _ArcJID, Row = #{}) ->
     Row#{some_hash => erlang:phash2(Row, 32)}.
 
 send_message(Row, From, To, Mess) ->
-    Res = xml:get_subtag(Mess, <<"result">>),
-    Res2 = xml:append_subtags(Res, [new_subelem(Row)]),
-    Mess2 = xml:replace_subelement(Mess, Res2),
+    Res = exml_query:subelement(Mess, <<"result">>),
+    Res2 = jlib:append_subtags(Res, [new_subelem(Row)]),
+    Mess2 = jlib:replace_subelement(Mess, Res2),
     mod_mam_utils:send_message(Row, From, To, Mess2).
 
 new_subelem(#{some_hash := SomeHash}) ->
-    #xmlel{name = <<"some_hash">>, attrs = [{<<"value">>, integer_to_binary(SomeHash)}]}.
+    #xmlel{name = <<"some_hash">>, attrs = #{<<"value">> => integer_to_binary(SomeHash)}}.

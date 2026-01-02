@@ -387,7 +387,7 @@ patch_offline_message(Packet) ->
 x_elem(ID) ->
     #xmlel{
         name = <<"x">>,
-        attrs = [{<<"xmlns">>, ?NS_EVENT}],
+        attrs = #{<<"xmlns">> => ?NS_EVENT},
         children = [ID, #xmlel{name = <<"offline">>}]}.
 
 %% Check if the packet has subelements about XEP-0022, XEP-0085 or other
@@ -469,12 +469,7 @@ remove_user(Acc, #{jid := #jid{luser = LUser, lserver = LServer}}, #{host_type :
     Params :: map(),
     Extra :: gen_hook:extra().
 remove_domain(Acc, #{domain := Domain}, #{host_type := HostType}) ->
-    case mongoose_lib:is_exported(mod_offline_backend, remove_domain, 2) of
-         true ->
-            mod_offline_backend:remove_domain(HostType, Domain);
-        false ->
-            ok
-    end,
+    mod_offline_backend:remove_domain(HostType, Domain),
     {ok, Acc}.
 
 -spec disco_features(Acc, Params, Extra) -> {ok, Acc} when
@@ -542,7 +537,7 @@ add_timestamp(undefined, _LServer, Packet) ->
     Packet;
 add_timestamp(TimeStamp, LServer, Packet) ->
     TimeStampXML = timestamp_xml(LServer, TimeStamp),
-    xml:append_subtags(Packet, [TimeStampXML]).
+    jlib:append_subtags(Packet, [TimeStampXML]).
 
 timestamp_xml(LServer, Time) ->
     FromJID = jid:make_noprep(<<>>, LServer, <<>>),

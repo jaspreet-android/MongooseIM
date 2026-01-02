@@ -19,9 +19,6 @@ COCKROACH_SQL=$(cat32 priv/cockroachdb.sql)
 COCKROACH_USER_SQL=$(cat32 tools/db_configs/cockroachdb/create_user.sql)
 COCKROACH_SETUP=$(cat32 tools/docker-setup-cockroachdb.sh)
 
-MSSQL_SQL=$(cat32 priv/mssql2012.sql)
-MSSQL_SETUP=$(cat32 tools/docker-setup-mssql.sh)
-
 LDAP_SCHEMA=$(cat32 tools/db_configs/ldap/init_entries.ldif)
 LDAP_SETUP=$(cat32 tools/db_configs/ldap/init_script.sh)
 
@@ -29,6 +26,8 @@ CASSA_PROXY_CNF=$(cat32 tools/db_configs/cassandra/proxy/zazkia-routes.json)
 CASSA_ENTRY=$(cat32 tools/db_configs/cassandra/docker_entry.sh)
 CASSA_MIM_CQL_ENTRY=$(cat32 priv/cassandra.cql)
 CASSA_TEST_CQL_ENTRY=$(cat32 big_tests/tests/mongoose_cassandra_SUITE_data/schema.cql)
+
+RMQ_TLS_CONFIG=$(cat32 tools/db_configs/rmq/20-tls.conf)
 
 MIM_CERT=$(cat32 tools/ssl/mongooseim/cert.pem)
 MIM_KEY=$(cat32 tools/ssl/mongooseim/key.pem)
@@ -56,9 +55,6 @@ sed -e "s/__MYSQL_CNF__/${MYSQL_CNF}/" \
     -e "s/__COCKROACHDB_SQL__/${COCKROACH_SQL}/" \
     -e "s/__COCKROACHDB_SETUP__/${COCKROACH_SETUP}/" \
     -e "s/__COCKROACHDB_VERSION__/${COCKROACHDB_VERSION}/" \
-    -e "s/__MSSQL_SQL__/${MSSQL_SQL}/" \
-    -e "s/__MSSQL_SETUP__/${MSSQL_SETUP}/" \
-    -e "s/__MSSQL_VERSION__/${MSSQL_VERSION}/" \
     -e "s/__REDIS_VERSION__/${REDIS_VERSION}/" \
     -e "s/__LDAP_SCHEMA__/${LDAP_SCHEMA}/" \
     -e "s/__LDAP_SETUP__/${LDAP_SETUP}/" \
@@ -70,6 +66,7 @@ sed -e "s/__MYSQL_CNF__/${MYSQL_CNF}/" \
     -e "s/__CASSA_VERSION__/${CASSANDRA_VERSION}/" \
     -e "s/__ELASTICSEARCH_VERSION__/${ELASTICSEARCH_VERSION}/" \
     -e "s/__RMQ_VERSION__/${RMQ_VERSION}/" \
+    -e "s/__RMQ_TLS_CONFIG__/${RMQ_TLS_CONFIG}/" \
     -e "s/__MINIO_VERSION__/${MINIO_VERSION}/" \
     -e "s/__MINIO_MC_VERSION__/${MINIO_MC_VERSION}/" \
     -e "s/__MIM_CERT__/${MIM_CERT}/" \

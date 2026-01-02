@@ -11,6 +11,7 @@
 %% mongoose_wpool callbacks
 -spec init() -> ok.
 init() ->
+    {ok, _} = application:ensure_all_started([mysql, epgsql], permanent),
     ejabberd_sup:create_ets_table(
       prepared_statements, [named_table, public, {read_concurrency, true}]).
 
@@ -74,9 +75,6 @@ get_port_from_rdbms_connection({{ok, DB, Pid}, _WorkerPid}) when DB =:= mysql;
                                                                  DB =:= cockroachdb ->
     ProcState = sys:get_state(Pid),
     get_port_from_proc_state(DB, ProcState);
-get_port_from_rdbms_connection({{ok, odbc, Pid}, WorkerPid}) ->
-    Links = element(2, erlang:process_info(Pid, links)) -- [WorkerPid],
-    [Port || Port <- Links, is_port(Port), {name, "tcp_inet"} == erlang:port_info(Port, name)];
 get_port_from_rdbms_connection(_) ->
     undefined.
 
@@ -139,13 +137,26 @@ merge_stats_fun(send_max, V1, V2) ->
 merge_stats_fun(_, V1, V2) ->
     V1 + V2.
 
-inet_stats(Port) ->
-    try
-        {ok, Stats} = inet:getstat(Port, inet_stats()),
-        Stats
-    catch C:R:S ->
-        ?LOG_INFO(#{what => inet_stats_failed, class => C, reason => R, stacktrace => S}),
-        empty_inet_stats_measurements()
+-spec inet_stats(inet:port_number() | ssl:sslsocket() | undefined) ->
+        [{inet:stat_option(), integer()}].
+inet_stats(undefined) ->
+    [];
+inet_stats(SslSock) when is_tuple(SslSock),
+                         element(1, SslSock) =:= sslsocket ->
+    case ssl:getstat(SslSock, inet_stats()) of
+        {ok, Stats} ->
+            Stats;
+        {error, Reason} ->
+            ?LOG_INFO(#{what => inet_stats_failed, transport => ssl, reason => Reason}),
+            []
+    end;
+inet_stats(Port) when is_port(Port) ->
+    case inet:getstat(Port, inet_stats()) of
+        {ok, Stats} ->
+            Stats;
+        {error, Reason} ->
+            ?LOG_INFO(#{what => inet_stats_failed, transport => tcp, reason => Reason}),
+            []
     end.
 
 inet_stats() ->

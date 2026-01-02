@@ -11,8 +11,7 @@
 -define(MAX_INTERVAL, 30).
 
 all() ->
-    [{group, odbc},
-     {group, mysql},
+    [{group, mysql},
      {group, pgsql}].
 
 init_per_suite(Config) ->
@@ -27,8 +26,7 @@ end_per_suite(Config) ->
     application:stop(exometer_core).
 
 groups() ->
-    [{odbc, [], tests()},
-     {mysql, [], tests()},
+    [{mysql, [], tests()},
      {pgsql, [], tests()}].
 
 tests() ->
@@ -36,14 +34,6 @@ tests() ->
      does_backoff_increase_to_a_point,
      keepalive_exit].
 
-init_per_group(odbc, Config) ->
-    case code:ensure_loaded(eodbc) of
-        {module, eodbc} ->
-            mongoose_rdbms_backend:init(odbc),
-            [{db_type, odbc} | Config];
-        _ ->
-            {skip, no_odbc_application}
-    end;
 init_per_group(Group, Config) ->
     mongoose_rdbms_backend:init(Group),
     [{db_type, Group} | Config].
@@ -137,14 +127,8 @@ unset_opts() ->
     mongoose_config:erase_opts().
 
 opts() ->
-    #{max_fsm_queue => 1024,
-      instrumentation => config_parser_helper:default_config([instrumentation])}.
+    #{instrumentation => config_parser_helper:default_config([instrumentation])}.
 
-meck_db(odbc) ->
-    meck:new(eodbc, [no_link]),
-    meck:expect(mongoose_rdbms_odbc, disconnect, fun(_) -> ok end),
-    meck:expect(eodbc, connect, fun(_, _) -> {ok, self()} end),
-    meck:expect(eodbc, sql_query, fun(_Ref, _Query, _Timeout) -> {selected, ["row"]} end);
 meck_db(mysql) ->
     meck:new(mysql, [no_link]),
     meck:expect(mongoose_rdbms_mysql, disconnect, fun(_) -> ok end),
@@ -161,17 +145,10 @@ meck_db(pgsql) ->
 
 meck_connection_error(pgsql) ->
     meck:expect(epgsql, connect, fun(_) -> connection_error end);
-meck_connection_error(odbc) ->
-    meck:expect(eodbc, connect, fun(_, _) -> connection_error end);
 meck_connection_error(mysql) ->
     meck:expect(mongoose_rdbms_mysql, connect, fun(_, _) -> {error, connection_error} end).
 
 
-meck_error(odbc) ->
-    meck:expect(eodbc, sql_query,
-                fun(_Ref, _Query, _Timeout) ->
-                        {error, "connection broken"}
-                end);
 meck_error(mysql) ->
     meck:expect(mysql, query, fun(_Ref, _Query) -> {error, {123, "", <<"connection broken">>}} end);
 meck_error(pgsql) ->
@@ -182,8 +159,6 @@ meck_error(pgsql) ->
 meck_config_and_db_unload(DbType) ->
     do_meck_unload(DbType).
 
-do_meck_unload(odbc) ->
-    meck:unload(eodbc);
 do_meck_unload(mysql) ->
     meck:unload(mongoose_rdbms_mysql),
     meck:unload(mysql);
@@ -195,22 +170,16 @@ query_calls(Config) ->
     {M, F} = mf(DbType),
     meck:num_calls(M, F, a(DbType)).
 
-mf(odbc) ->
-    {eodbc, sql_query};
 mf(mysql) ->
     {mysql, query};
 mf(pgsql) ->
     {epgsql, squery}.
 
-a(odbc) ->
-    ['_', [?KEEPALIVE_QUERY], '_'];
 a(mysql) ->
     ['_', [?KEEPALIVE_QUERY]];
 a(pgsql) ->
     ['_', [?KEEPALIVE_QUERY]].
 
-server_opts(odbc) ->
-    #{driver => odbc, settings => "fake-connection-string"};
 server_opts(mysql) ->
     #{driver => mysql, host => "fake-host", port => 3306,
       database => "fake-db", username => "fake-user", password => "fake-pass"};

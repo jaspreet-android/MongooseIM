@@ -98,7 +98,7 @@ config_spec() ->
                                                    validate = positive},
                   <<"token_bytes">> => #option{type = integer,
                                                validate = positive},
-                  <<"max_file_size">> => #option{type = integer,
+                  <<"max_file_size">> => #option{type = int_or_infinity,
                                                  validate = positive},
                   <<"s3">> => s3_spec()
         },
@@ -164,15 +164,14 @@ process_disco_iq(Acc, _From, _To, #iq{type = set, lang = Lang, sub_el = SubEl} =
     Error = mongoose_xmpp_errors:not_allowed(Lang, ErrorMsg),
     {Acc, IQ#iq{type = error, sub_el = [SubEl, Error]}};
 process_disco_iq(Acc, _From, _To, #iq{type = get, lang = Lang, sub_el = SubEl} = IQ, _Extra) ->
-    Node = xml:get_tag_attr_s(<<"node">>, SubEl),
-    case Node of
+    case exml_query:attr(SubEl, <<"node">>, <<>>) of
         <<>> ->
             Identity = mongoose_disco:identities_to_xml(disco_identity(Lang)),
             Info = disco_info(mongoose_acc:host_type(Acc)),
             Features = mongoose_disco:features_to_xml([?NS_HTTP_UPLOAD_030]),
             {Acc, IQ#iq{type = result,
                         sub_el = [#xmlel{name = <<"query">>,
-                                         attrs = [{<<"xmlns">>, ?NS_DISCO_INFO}],
+                                         attrs = #{<<"xmlns">> => ?NS_DISCO_INFO},
                                          children = Identity ++ Info ++ Features}]}};
         _ ->
             ErrorMsg = <<"Node is not supported by HTTP upload">>,
@@ -237,7 +236,7 @@ subdomain_pattern(HostType) ->
 
 -spec my_disco_name(ejabberd:lang()) -> binary().
 my_disco_name(Lang) ->
-    translate:translate(Lang, <<"HTTP File Upload">>).
+    service_translations:do(Lang, <<"HTTP File Upload">>).
 
 
 -spec compose_iq_reply(IQ :: jlib:iq(),
@@ -248,7 +247,7 @@ my_disco_name(Lang) ->
 compose_iq_reply(IQ, PutUrl, GetUrl, Headers) ->
     Slot = #xmlel{
               name     = <<"slot">>,
-              attrs    = [{<<"xmlns">>, ?NS_HTTP_UPLOAD_030}],
+              attrs    = #{<<"xmlns">> => ?NS_HTTP_UPLOAD_030},
               children = [create_url_xmlel(<<"put">>, PutUrl, Headers),
                           create_url_xmlel(<<"get">>, GetUrl, #{})]},
     IQ#iq{type = result, sub_el =[Slot]}.
@@ -259,7 +258,7 @@ token_bytes(HostType) ->
     gen_mod:get_module_opt(HostType, ?MODULE, token_bytes).
 
 
--spec max_file_size(mongooseim:host_type()) -> pos_integer() | undefined.
+-spec max_file_size(mongooseim:host_type()) -> pos_integer() | infinity.
 max_file_size(HostType) ->
     gen_mod:get_module_opt(HostType, ?MODULE, max_file_size).
 
@@ -270,7 +269,7 @@ module_opts(HostType) ->
 
 -spec generate_token(mongooseim:host_type()) -> binary().
 generate_token(HostType) ->
-    base16:encode(crypto:strong_rand_bytes(token_bytes(HostType))).
+    binary:encode_hex(crypto:strong_rand_bytes(token_bytes(HostType)), lowercase).
 
 
 -spec file_too_large_error(MaxFileSize :: non_neg_integer()) -> exml:element().
@@ -279,7 +278,7 @@ file_too_large_error(MaxFileSize) ->
     MaxSizeEl = #xmlel{name = <<"max-file-size">>,
                        children = [#xmlcdata{content = MaxFileSizeBin}]},
     FileTooLargeEl = #xmlel{name = <<"file-too-large">>,
-                            attrs = [{<<"xmlns">>, ?NS_HTTP_UPLOAD_030}],
+                            attrs = #{<<"xmlns">> => ?NS_HTTP_UPLOAD_030},
                             children = [MaxSizeEl]},
     Error0 = mongoose_xmpp_errors:not_acceptable(),
     Error0#xmlel{children = [FileTooLargeEl | Error0#xmlel.children]}.
@@ -306,7 +305,7 @@ get_disco_info_form(MaxFileSizeBin) ->
 -spec header_to_xmlel({Key :: binary(), Value :: binary()}) -> exml:element().
 header_to_xmlel({Key, Value}) ->
     #xmlel{name = <<"header">>,
-           attrs = [{<<"name">>, Key}],
+           attrs = #{<<"name">> => Key},
            children = [#xmlcdata{content = Value}]}.
 
 
@@ -314,7 +313,7 @@ header_to_xmlel({Key, Value}) ->
     exml:element().
 create_url_xmlel(Name, Url, Headers) ->
     HeadersXml = [header_to_xmlel(H) || H <- maps:to_list(Headers)],
-    #xmlel{name = Name, attrs = [{<<"url">>, Url}], children = HeadersXml}.
+    #xmlel{name = Name, attrs = #{<<"url">> => Url}, children = HeadersXml}.
 
 
 -spec is_nonempty_binary(term()) -> boolean().

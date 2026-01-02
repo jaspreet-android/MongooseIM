@@ -10,7 +10,7 @@ Alternatively, check out our tutorial on [How to build MongooseIM from source co
 
 ## Packages
 
-Go to the [downloads](https://www.erlang-solutions.com/resources/download.html) section of the Erlang Solutions website, and choose the version of MongooseIM you want.
+Go to the [latest release](https://github.com/esl/MongooseIM/releases/latest) page and select the package compatible with your system version.
 The following sections describe the installation process for different operating systems.
 
 
@@ -24,17 +24,17 @@ The following sections describe the installation process for different operating
 
 === "CentOS compatible: AlmaLinux / Rocky Linux"
 
-    An ODBC (RDBMS) driver must be installed on your machine to unpack and install from RPM packages. Enter the following command in a terminal window to install the latest unixODBC driver:
-    
-    ```bash
-    sudo yum install unixODBC
-    ```
-    
     Once the RPM file is downloaded, open a terminal window and navigate to the directory containing the package. Use the following command to unpack and install MongooseIM:
-    
+
     ```bash
     sudo rpm -i mongooseim_[version here].rpm
     ```
+
+!!! info
+    Packages for older systems (Ubuntu Focal, Debian Bullseye, Debian Buster, AlmaLinux 8, Rocky Linux 8)
+    include a bundled OpenSSL 3.x, as this version is required for MongooseIM to function correctly,
+    but is not available in the official repositories for these distributions.
+    If your system already has OpenSSL 3.x installed, the package will detect and use the system version instead of the bundled one.
 
 ## Docker
 

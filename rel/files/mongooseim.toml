@@ -14,13 +14,9 @@
   {{#s2s_backend}}
   s2s_backend = {{{s2s_backend}}}
   {{/s2s_backend}}
-  max_fsm_queue = 1000
   {{#http_server_name}}
   http_server_name = {{{http_server_name}}}
   {{/http_server_name}}
-  {{#rdbms_server_type}}
-  rdbms_server_type = {{{rdbms_server_type}}}
-  {{/rdbms_server_type}}
 
 [[listen.http]]
   port = {{{http_port}}}
@@ -128,7 +124,7 @@
 [[listen.c2s]]
   port = {{{c2s_port}}}
   access = "c2s"
-  shaper = "c2s_shaper"
+  shaper = "normal"
   max_stanza_size = 65536
   {{#tls_config}}
   {{{tls_config}}}
@@ -146,15 +142,18 @@
 
 [[listen.s2s]]
   port = {{{incoming_s2s_port}}}
-  shaper = "s2s_shaper"
+  shaper = "fast"
   max_stanza_size = 131072
+  {{#tls_config}}
+  {{{tls_config}}}
+  {{/tls_config}}
   {{#s2s_dhfile}}
   tls.dhfile = {{{s2s_dhfile}}}
   {{/s2s_dhfile}}
-{{#listen_service}}
+{{#listen_component}}
 
-{{{listen_service}}}
-{{/listen_service}}
+{{{listen_component}}}
+{{/listen_component}}
 
 [auth]
   {{#cyrsasl_external}}
@@ -269,7 +268,7 @@
 {{{instrumentation}}}
 
 [shaper.normal]
-  max_rate = 1000
+  max_rate = 16_384
 
 [shaper.fast]
   max_rate = 50_000
@@ -300,15 +299,6 @@
   c2s = [
     {acl = "blocked", value = "deny"},
     {acl = "all", value = "allow"}
-  ]
-
-  c2s_shaper = [
-    {acl = "admin", value = "none"},
-    {acl = "all", value = "normal"}
-  ]
-
-  s2s_shaper = [
-    {acl = "all", value = "fast"}
   ]
 
   muc_admin = [
@@ -364,20 +354,21 @@
   ]
 
 [s2s]
-  {{#s2s_use_starttls}}
-  use_starttls = {{{s2s_use_starttls}}}
-  {{/s2s_use_starttls}}
-  {{#s2s_certfile}}
-  certfile = {{{s2s_certfile}}}
-  {{/s2s_certfile}}
   {{#s2s_default_policy}}
   default_policy = {{{s2s_default_policy}}}
   {{/s2s_default_policy}}
-  outgoing.port = {{{outgoing_s2s_port}}}
-  {{#s2s_addr}}
 
-  {{{s2s_addr}}}
-  {{/s2s_addr}}
+  [s2s.outgoing]
+    {{#max_retry_delay}}
+    max_retry_delay = {{{max_retry_delay}}}
+    {{/max_retry_delay}}
+    port = {{{outgoing_s2s_port}}}
+    tls.mode = "starttls"
+    {{{s2s_outgoing_tls_config}}}
+    {{#s2s_addr}}
+
+    {{{s2s_addr}}}
+    {{/s2s_addr}}
 
 {{#host_config}}
 {{{host_config}}}

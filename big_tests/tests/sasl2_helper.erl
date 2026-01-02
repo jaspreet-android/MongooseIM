@@ -21,8 +21,17 @@ load_all_sasl2_modules(HostType) ->
                {mod_sasl2, default_mod_config(mod_sasl2)},
                {mod_csi, default_mod_config(mod_csi)},
                {mod_carboncopy, default_mod_config(mod_carboncopy)},
-               {mod_stream_management, mod_config(mod_stream_management, SMOpts)}],
+               {mod_stream_management, mod_config(mod_stream_management, SMOpts)}]
+        ++ rdbms_mods(),
     dynamic_modules:ensure_modules(HostType, Modules).
+
+rdbms_mods() ->
+    case mongoose_helper:is_rdbms_enabled(domain_helper:host_type()) of
+        true ->
+            [{mod_fast_auth_token, mod_config(mod_fast_auth_token, #{backend => rdbms})}];
+        false ->
+            []
+    end.
 
 apply_steps(Steps, Config) ->
     apply_steps(Steps, Config, undefined, #{}).
@@ -55,10 +64,13 @@ create_user(Config, Client, Data) ->
     Spec = escalus_fresh:create_fresh_user(Config, alice),
     {Client, Data#{spec => Spec}}.
 
-connect_tls(_Config, _, #{spec := Spec} = Data) ->
+connect_tls(Config, _, #{spec := Spec} = Data) ->
+    %% Direct TLS port
     TlsPort = ct:get_config({hosts, mim, c2s_tls_port}),
-    Spec1 = [{port, TlsPort}, {tls_module, ssl}, {ssl, true}, {ssl_opts, [{verify, verify_none}]}
-             | Spec],
+    SSLOpts = proplists:get_value(ssl_opts, Spec, []),
+    SSLOpts2 = SSLOpts ++ [{verify, verify_none}],
+    Spec1 = [{port, TlsPort}, {tls_module, ssl}, {ssl, true},
+             {ssl_opts, SSLOpts2} | lists:keydelete(ssl_opts, 1, Spec)],
     Client1 = escalus_connection:connect(Spec1),
     {Client1, Data#{spec => Spec1}}.
 
@@ -66,6 +78,11 @@ start_stream_get_features(_Config, Client, Data) ->
     Client1 = escalus_session:start_stream(Client),
     Features = escalus_connection:get_stanza(Client1, wait_for_features),
     {Client1, Data#{features => Features}}.
+
+%% From escalus_connection:start_stream
+-spec start_stream(escalus_connection:client()) -> binary().
+start_stream(#client{module = Mod, props = Props} = Client) ->
+    exml:to_binary(Mod:stream_start_req(Props)).
 
 send_invalid_mech_auth_stanza(_Config, Client, Data) ->
     Authenticate = auth_elem(<<"invalid-non-existent-mechanism">>, []),
@@ -103,15 +120,15 @@ auth_with_resumption(Config, Client, #{smid := SMID, texts := Texts} = Data) ->
 
 auth_with_resumption_invalid_h(Config, Client, #{smid := SMID} = Data) ->
     Resume = #xmlel{name = <<"resume">>,
-                    attrs = [{<<"xmlns">>, ?NS_STREAM_MGNT_3},
-                             {<<"previd">>, SMID},
-                             {<<"h">>, <<"aaa">>}]},
+                    attrs = #{<<"xmlns">> => ?NS_STREAM_MGNT_3,
+                              <<"previd">> => SMID,
+                              <<"h">> => <<"aaa">>}},
     plain_auth(Config, Client, Data, [Resume]).
 
 auth_with_resumption_missing_previd(Config, Client, Data) ->
     Resume = #xmlel{name = <<"resume">>,
-                    attrs = [{<<"xmlns">>, ?NS_STREAM_MGNT_3},
-                             {<<"h">>, <<"aaa">>}]},
+                    attrs = #{<<"xmlns">> => ?NS_STREAM_MGNT_3,
+                              <<"h">> => <<"aaa">>}},
     plain_auth(Config, Client, Data, [Resume]).
 
 auth_with_resumption_exceeding_h(Config, Client, #{smid := SMID} = Data) ->
@@ -226,10 +243,13 @@ auth_elem(Mech, Children) ->
 
 auth_elem(Mech, NS, Children) ->
     #xmlel{name = <<"authenticate">>,
-           attrs = [{<<"xmlns">>, NS}, {<<"mechanism">>, Mech}],
+           attrs = #{<<"xmlns">> => NS, <<"mechanism">> => Mech},
            children = Children}.
 
 plain_auth_initial_response(#client{props = Props}) ->
+    plain_auth_initial_response_from_spec(Props).
+
+plain_auth_initial_response_from_spec(Props) ->
     Username = proplists:get_value(username, Props),
     Password = proplists:get_value(password, Props),
     AuthPayload = <<0:8, Username/binary, 0:8, Password/binary>>,
@@ -245,7 +265,7 @@ response_elem(Response) ->
 
 response_elem(Response, NS) ->
     #xmlel{name = <<"response">>,
-           attrs = [{<<"xmlns">>, NS}],
+           attrs = #{<<"xmlns">> => NS},
            children = [#xmlcdata{content = base64:encode(Response)}]}.
 
 abort_elem() ->
@@ -253,7 +273,7 @@ abort_elem() ->
 
 abort_elem(NS) ->
     #xmlel{name = <<"abort">>,
-           attrs = [{<<"xmlns">>, NS}],
+           attrs = #{<<"xmlns">> => NS},
            children = []}.
 
 user_agent_elem_without_id() ->
@@ -279,5 +299,5 @@ user_agent_elem(Id, Software, Device) ->
               || Value <- [Software], Value =/= undefined ],
     DeviEl = [#xmlel{name = <<"device">>, children = [#xmlcdata{content = Value}]}
               || Value <- [Device], Value =/= undefined ],
-    Attrs = [{<<"id">>, Value} || Value <- [Id], Value =/= undefined ],
+    Attrs = #{<<"id">> => Value || Value <- [Id], Value =/= undefined},
     #xmlel{name = <<"user-agent">>, attrs = Attrs, children = SoftEl ++ DeviEl}.

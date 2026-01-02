@@ -11,7 +11,7 @@
 -define(B(C), (proplists:get_value(backend, C))).
 -define(MAX_USER_SESSIONS, 2).
 
--import(config_parser_helper, [default_config/1]).
+-import(config_parser_helper, [config/2, default_config/1]).
 
 all() -> [{group, mnesia}, {group, redis}, {group, cets}].
 
@@ -35,7 +35,7 @@ opts() ->
 
 groups() ->
     [{mnesia, [], tests()},
-     {redis, [], tests()},
+     {redis, [], tests() ++ redis_only_tests()},
      {cets, [], tests()}].
 
 tests() ->
@@ -47,6 +47,7 @@ tests() ->
      session_is_updated_when_created_twice,
      delete_session,
      clean_up,
+     clean_up_with_colon_in_resource,
      too_many_sessions,
      unique_count,
      session_info_is_stored,
@@ -58,8 +59,14 @@ tests() ->
      kv_can_be_updated_for_session,
      kv_can_be_removed_for_session,
      store_info_sends_message_to_the_session_owner,
-     remove_info_sends_message_to_the_session_owner
+     remove_info_sends_message_to_the_session_owner,
+     parse_session_key_s5_format,
+     parse_session_key_s4_format,
+     parse_session_key_s4_format_with_colon_in_sid
     ].
+
+redis_only_tests() ->
+    [clean_up_s4_backward_compatibility].
 
 init_per_group(mnesia, Config) ->
     ok = mnesia:create_schema([node()]),
@@ -72,13 +79,13 @@ init_per_group(cets, Config) ->
     {ok, Pid} = cets_discovery:start(DiscoOpts),
     [{backend, ejabberd_sm_cets}, {cets_disco_pid, Pid} | Config].
 
-init_redis_group(true, Config) ->
+init_redis_group({true, ConnType}, Config) ->
     Self = self(),
     proc_lib:spawn(fun() ->
                   register(test_helper, self()),
                   mongoose_wpool:ensure_started(),
                   % This would be started via outgoing_pools in normal case
-                  Pool = default_config([outgoing_pools, redis, default]),
+                  Pool = config([outgoing_pools, redis, default], redis_pool_config(ConnType)),
                   mongoose_wpool:start_configured_pools([Pool], [], []),
                   Self ! ready,
                   receive stop -> ok end
@@ -87,6 +94,11 @@ init_redis_group(true, Config) ->
     [{backend, ejabberd_sm_redis} | Config];
 init_redis_group(_, _) ->
     {skip, "redis not running"}.
+
+redis_pool_config(plain) ->
+    #{};
+redis_pool_config(tls) ->
+    #{conn_opts => #{tls => #{verify_mode => none}}}.
 
 end_per_group(mnesia, Config) ->
     mnesia:stop(),
@@ -103,6 +115,11 @@ init_per_testcase(too_many_sessions, Config) ->
     set_test_case_meck(?MAX_USER_SESSIONS, true),
     setup_sm(Config),
     Config;
+init_per_testcase(Case, Config) when Case =:= parse_session_key_s5_format;
+                                      Case =:= parse_session_key_s4_format;
+                                      Case =:= parse_session_key_s4_format_with_colon_in_sid ->
+    %% No setup needed - these are pure function tests
+    Config;
 init_per_testcase(Case, Config) ->
     set_test_case_meck(infinity, should_meck_c2s(Case)),
     setup_sm(Config),
@@ -112,6 +129,10 @@ should_meck_c2s(store_info_sends_message_to_the_session_owner) -> false;
 should_meck_c2s(remove_info_sends_message_to_the_session_owner) -> false;
 should_meck_c2s(_) -> true.
 
+end_per_testcase(Case, Config) when Case =:= parse_session_key_s5_format;
+                                     Case =:= parse_session_key_s4_format;
+                                     Case =:= parse_session_key_s4_format_with_colon_in_sid ->
+    Config;
 end_per_testcase(_, Config) ->
     clean_sessions(Config),
     terminate_sm(),
@@ -348,6 +369,71 @@ clean_up(C) ->
     %% give sm backend some time to clean all sessions
     ensure_empty(C, 10, ?B(C):get_sessions()).
 
+clean_up_with_colon_in_resource(C) ->
+    %% Test that resources containing colons are handled correctly during cleanup
+    Users = [generate_user(<<"user1">>, <<"localhost">>, <<"device:with:colons">>),
+             generate_user(<<"user2">>, <<"localhost">>, <<"smile:)">>),
+             generate_user(<<"user3">>, <<"otherhost">>, <<"a]b:c[d">>)],
+    [given_session_opened(Sid, USR) || {Sid, USR} <- Users],
+    ?B(C):cleanup(node()),
+    %% give sm backend some time to clean all sessions
+    ensure_empty(C, 10, ?B(C):get_sessions()).
+
+%% Redis-only test: verify backward compatibility with old s4: key format
+clean_up_s4_backward_compatibility(_C) ->
+    %% This test verifies that old s4: format keys are still parsed correctly
+    %% during cleanup (for rolling upgrades)
+    U = <<"testuser">>,
+    S = <<"localhost">>,
+    R = <<"resource">>,
+    Sid = make_sid(),
+    %% Create session using the new format (s5:)
+    Session = #session{sid = Sid, usr = {U, S, R}, us = {U, S}, priority = 1, info = #{}},
+    ejabberd_sm_redis:set_session(U, S, R, Session),
+    %% Manually insert an old-format s4: key into Redis to simulate legacy data
+    OldFormatKey = iolist_to_binary(["s4:", U, ":", S, ":", R, ":", term_to_binary(Sid)]),
+    mongoose_redis:cmd(["SADD", n(node()), OldFormatKey]),
+    %% Also add the session data so delete_session can find it
+    Sid2 = make_sid(),
+    Session2 = #session{sid = Sid2, usr = {U, S, R}, us = {U, S}, priority = 1, info = #{}},
+    BSession2 = term_to_binary(Session2),
+    mongoose_redis:cmd(["SADD", hash(U, S), BSession2]),
+    mongoose_redis:cmd(["SADD", hash(U, S, R), BSession2]),
+    %% Cleanup should handle both s4: and s5: keys
+    ejabberd_sm_redis:cleanup(node()),
+    %% Verify cleanup succeeded (node set should be empty)
+    [] = mongoose_redis:cmd(["SMEMBERS", n(node())]).
+
+parse_session_key_s5_format(_Config) ->
+    %% Test new s5: format with hex-encoded resource
+    U = <<"user">>,
+    S = <<"server">>,
+    R = <<"resource">>,
+    Sid = {erlang:timestamp(), self()},
+    HexResource = binary:encode_hex(R, lowercase),
+    Key = iolist_to_binary(["s5:", U, ":", S, ":", HexResource, ":", term_to_binary(Sid)]),
+    {U, S, R, Sid} = ejabberd_sm_redis:parse_session_key(Key).
+
+parse_session_key_s4_format(_Config) ->
+    %% Test old s4: format parsing
+    U = <<"user">>,
+    S = <<"server">>,
+    R = <<"resource">>,
+    Sid = {erlang:timestamp(), self()},
+    Key = iolist_to_binary(["s4:", U, ":", S, ":", R, ":", term_to_binary(Sid)]),
+    {U, S, R, Sid} = ejabberd_sm_redis:parse_session_key(Key).
+
+parse_session_key_s4_format_with_colon_in_sid(_Config) ->
+    %% Test s4: format where BinarySID happens to contain colon bytes
+    %% The parser handles this by joining SIDEncoded parts back together
+    U = <<"user">>,
+    S = <<"server">>,
+    R = <<"resource">>,
+    Sid = {erlang:timestamp(), self()},
+    BinarySid = term_to_binary(Sid),
+    Key = iolist_to_binary(["s4:", U, ":", S, ":", R, ":", BinarySid]),
+    {U, S, R, Sid} = ejabberd_sm_redis:parse_session_key(Key).
+
 ensure_empty(_C, 0, Sessions) ->
     [] = Sessions;
 ensure_empty(C, N, Sessions) ->
@@ -366,7 +452,7 @@ too_many_sessions(_C) ->
     [given_session_opened(Sid, USR) || {Sid, USR} <- UserSessions],
 
     receive
-        {forwarded, _Sid, {'$gen_cast', {exit, <<"Replaced by new connection">>}}} ->
+        {forwarded, _Sid, {'$gen_cast', {exit, {replaced, _Pid}}}} ->
             ok;
         Message ->
             ct:fail("Unexpected message: ~p", [Message])
@@ -500,7 +586,7 @@ do_verify_session_opened(ejabberd_sm_mnesia, Sid, {U, S, R} = USR) ->
 do_verify_session_opened(ejabberd_sm_cets, Sid, {U, S, R} = USR) ->
     general_session_check(ejabberd_sm_cets, Sid, USR, U, S, R);
 do_verify_session_opened(ejabberd_sm_redis, Sid, {U, S, R} = USR) ->
-    UHash = iolist_to_binary(hash(U, S, R, Sid)),
+    UHash = iolist_to_binary(hash_v2(U, S, R, Sid)),
     Hashes = mongoose_redis:cmd(["SMEMBERS", n(node())]),
     true = lists:member(UHash, Hashes),
     SessionsUSEncoded = mongoose_redis:cmd(["SMEMBERS", hash(U, S)]),
@@ -533,11 +619,11 @@ clean_sessions(C) ->
     end.
 
 generate_random_user(S) ->
-    U = base16:encode(crypto:strong_rand_bytes(5)),
+    U = binary:encode_hex(crypto:strong_rand_bytes(5)),
     generate_random_user(U, S).
 
 generate_random_user(U, S) ->
-    R = base16:encode(crypto:strong_rand_bytes(5)),
+    R = binary:encode_hex(crypto:strong_rand_bytes(5)),
     generate_user(U, S, R).
 
 generate_user(U, S, R) ->
@@ -552,7 +638,7 @@ generate_random_users(Count, Server) ->
     [generate_random_user(Server) || _ <- lists:seq(1, Count)].
 
 generate_many_random_res(UsersPerServer, ResourcesPerUser, Servers) ->
-    Usernames = [base16:encode(crypto:strong_rand_bytes(5)) || _ <- lists:seq(1, UsersPerServer)],
+    Usernames = [binary:encode_hex(crypto:strong_rand_bytes(5)) || _ <- lists:seq(1, UsersPerServer)],
     [generate_random_user(U, S) || U <- Usernames, S <- Servers, _ <- lists:seq(1, ResourcesPerUser)].
 
 get_unique_us_dict(USRs) ->
@@ -582,6 +668,11 @@ hash(Val1, Val2, Val3) ->
 hash(Val1, Val2, Val3, Val4) ->
     ["s4:", Val1, ":", Val2, ":", Val3, ":", term_to_binary(Val4)].
 
+%% New format with hex-encoded resource (matches ejabberd_sm_redis:hash_v2/4)
+-spec hash_v2(binary(), binary(), binary(), binary()) -> iolist().
+hash_v2(User, Server, Resource, SID) ->
+    ["s5:", User, ":", Server, ":", binary:encode_hex(Resource, lowercase), ":", term_to_binary(SID)].
+
 
 -spec n(atom()) -> iolist().
 n(Node) ->
@@ -589,17 +680,53 @@ n(Node) ->
 
 
 is_redis_running() ->
+    ct:log("Checking if Redis is running..."),
+    % Try plain connection first (for local development)
     case eredis:start_link([{host, "127.0.0.1"}]) of
         {ok, Client} ->
-            Result = eredis:q(Client, [<<"PING">>], 5000),
-            eredis:stop(Client),
-            case Result of
-                {ok,<<"PONG">>} ->
-                    true;
-                _ ->
-                    false
+            ct:log("Plain TCP connection to Redis succeeded"),
+            case check_redis_ping(Client, plain) of
+                {true, plain} ->
+                    {true, plain};
+                false ->
+                    %% tcp_closed case handled inside check_redis_ping returns false
+                    is_redis_running_tls()
             end;
-        _ ->
+        PlainError ->
+            ct:log("Plain TCP connection to Redis failed: ~p, trying TLS...", [PlainError]),
+            is_redis_running_tls()
+    end.
+
+is_redis_running_tls() ->
+    ct:log("Attempting TLS connection to Redis on 127.0.0.1:6379"),
+    try
+        TlsOpts = just_tls:make_client_opts(#{verify_mode => none}),
+        try_redis_tls_connection(TlsOpts)
+    catch
+        Error ->
+            ct:log("TLS connection attempt failed with exception: ~p", [Error]),
+            false
+    end.
+
+try_redis_tls_connection(TlsOpts) ->
+    case eredis:start_link([{host, "127.0.0.1"}, {port, 6379}, {tls, TlsOpts}]) of
+        {ok, Client} ->
+            ct:log("TLS connection to Redis succeeded"),
+            check_redis_ping(Client, tls);
+        TlsError ->
+            ct:log("TLS connection to Redis failed: ~p", [TlsError]),
+            false
+    end.
+
+check_redis_ping(Client, ConnType) ->
+    Result = eredis:q(Client, [<<"PING">>], 5000),
+    eredis:stop(Client),
+    case Result of
+        {ok, <<"PONG">>} ->
+            ct:log("Redis ~p connection: PING successful", [ConnType]),
+            {true, ConnType};
+        Error ->
+            ct:log("Redis ~p connection: PING failed with ~p", [ConnType, Error]),
             false
     end.
 

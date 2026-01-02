@@ -23,7 +23,7 @@
 
 -include_lib("amqp_client/include/amqp_client.hrl").
 
--export([network_params/1, exchange_declare/2,
+-export([network_params/1, exchange_declare/3,
          exchange_declare_ok/0, exchange_delete/1, basic_publish/2,
          confirm_select/0, confirm_select_ok/0, message/1]).
 
@@ -54,12 +54,16 @@
 %%%===================================================================
 
 -spec network_params(map()) -> #amqp_params_network{}.
-network_params(#{host := Host, port := Port, username := UserName, password := Password}) ->
-    #amqp_params_network{host = Host, port = Port, username = UserName, password = Password}.
+network_params(ConnOpts) ->
+    #{host := Host, port := Port, username := UserName, password := Password,
+      virtual_host := VirtualHost} = ConnOpts,
+    #amqp_params_network{host = Host, port = Port, username = UserName, password = Password,
+                         virtual_host = VirtualHost,
+                         ssl_options = ssl_options(ConnOpts)}.
 
--spec exchange_declare(Exchange :: binary(), Type :: binary()) -> method().
-exchange_declare(Exchange, Type) ->
-    #'exchange.declare'{exchange = Exchange, type = Type}.
+-spec exchange_declare(Exchange :: binary(), Type :: binary(), Durable :: boolean()) -> method().
+exchange_declare(Exchange, Type, Durable) ->
+    #'exchange.declare'{exchange = Exchange, type = Type, durable = Durable}.
 
 -spec exchange_declare_ok() -> method().
 exchange_declare_ok() ->
@@ -84,3 +88,8 @@ confirm_select_ok() ->
 -spec message(Payload :: binary()) -> message().
 message(Payload) ->
     #amqp_msg{payload = Payload}.
+
+%% Helpers
+
+ssl_options(#{tls := TLSOpts}) -> just_tls:make_client_opts(TLSOpts);
+ssl_options(#{}) -> none.

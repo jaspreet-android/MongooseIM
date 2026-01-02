@@ -32,7 +32,7 @@
 
 -spec escape_binary(binary()) -> iodata().
 escape_binary(Bin) when is_binary(Bin) ->
-    [<<"X'">>, base16:encode(Bin), <<"'">>].
+    [<<"X'">>, binary:encode_hex(Bin, lowercase), <<"'">>].
 
 -spec unescape_binary(binary()) -> binary().
 unescape_binary(Bin) when is_binary(Bin) ->
@@ -44,7 +44,6 @@ connect(Options, QueryTimeout) ->
     case mysql:start_link([{query_timeout, QueryTimeout} | db_opts(Options)]) of
         {ok, Ref} ->
             mysql:query(Ref, <<"set names 'utf8mb4';">>),
-            mysql:query(Ref, <<"SET SESSION query_cache_type=1;">>),
             {ok, Ref};
         Error ->
             Error
@@ -78,7 +77,7 @@ db_opts(Options) ->
     FilteredOpts = maps:with([host, port, database, username, password, tls], Options),
     [{found_rows, true} | lists:map(fun process_opt/1, maps:to_list(FilteredOpts))].
 
-process_opt({tls, TLSOpts}) -> {ssl, just_tls:make_ssl_opts(TLSOpts)};
+process_opt({tls, TLSOpts}) -> {ssl, just_tls:make_client_opts(TLSOpts)};
 process_opt({username, UserName}) -> {user, UserName};
 process_opt(Opt) -> Opt.
 

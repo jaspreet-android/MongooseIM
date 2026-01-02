@@ -46,12 +46,6 @@
 -opaque escaped_value() :: escaped_string() | escaped_binary() | escaped_integer() |
                            escaped_boolean() | escaped_null().
 
--ifdef(gen_server_request_id).
--type request_id() :: gen_server:request_id().
--else.
--type request_id() :: term().
--endif.
-
 -export_type([escaped_binary/0,
               escaped_string/0,
               escaped_like/0,
@@ -82,7 +76,6 @@
          transaction_with_delayed_retry/3,
          to_bool/1,
          db_engine/1,
-         db_type/0,
          use_escaped/1]).
 
 %% Unicode escaping
@@ -158,8 +151,8 @@
 -type rdbms_msg() :: {sql_query, _}
                    | {sql_transaction, fun()}
                    | {sql_dirty, fun()}
-                   | {sql_execute, atom(), [binary() | boolean() | integer()]}
-                   | {sql_execute_wrapped, atom(), [binary() | boolean() | integer()], request_wrapper()}.
+                   | {sql_execute, atom(), [iodata() | boolean() | integer() | null]}
+                   | {sql_execute_wrapped, atom(), [iodata() | boolean() | integer() | null], request_wrapper()}.
 -type single_query_result() :: {selected, [tuple()]} |
                                {updated, non_neg_integer() | undefined} |
                                {updated, non_neg_integer(), [tuple()]} |
@@ -170,10 +163,15 @@
 -type dirty_result() :: {ok, any()} | {error, any()}.
 -export_type([query_name/0, query_result/0, transaction_result/0]).
 
--type backend() :: pgsql | mysql | odbc | cockroachdb.
+-type backend() :: pgsql | mysql | cockroachdb.
 -type options() :: #{driver := backend(),
                      max_start_interval := pos_integer(),
                      query_timeout := pos_integer(),
+                     host := nonempty_string(),
+                     database := nonempty_string(),
+                     username := nonempty_string(),
+                     password := nonempty_string(),
+                     port := inet:port_number(),
                      atom() => any()}.
 
 -export_type([options/0, backend/0]).
@@ -183,8 +181,6 @@
 %%%----------------------------------------------------------------------
 
 -spec process_options(map()) -> options().
-process_options(Opts = #{driver := odbc, settings := _}) ->
-    Opts;
 process_options(Opts = #{host := _Host, database := _DB, username := _User, password := _Pass}) ->
     ensure_db_port(process_tls_options(Opts));
 process_options(Opts) ->
@@ -241,23 +237,24 @@ execute_cast(HostType, Name, Parameters) ->
 execute_cast(HostType, PoolTag, Name, Parameters) when is_atom(PoolTag), is_atom(Name), is_list(Parameters) ->
     sql_cast(HostType, PoolTag, {sql_execute, Name, Parameters}).
 
--spec execute_request(mongooseim:host_type_or_global(), query_name(), query_params()) -> request_id().
+-spec execute_request(mongooseim:host_type_or_global(), query_name(), query_params()) ->
+    gen_server:request_id().
 execute_request(HostType, Name, Parameters) when is_atom(Name), is_list(Parameters) ->
     execute_request(HostType, ?DEFAULT_POOL_TAG, Name, Parameters).
 
 -spec execute_request(mongooseim:host_type_or_global(), mongoose_wpool:tag(), query_name(), query_params()) ->
-    request_id().
+    gen_server:request_id().
 execute_request(HostType, PoolTag, Name, Parameters) when is_atom(PoolTag), is_atom(Name), is_list(Parameters) ->
     sql_request(HostType, PoolTag, {sql_execute, Name, Parameters}).
 
 -spec execute_wrapped_request(mongooseim:host_type_or_global(), query_name(), query_params(), request_wrapper()) ->
-    request_id().
+    gen_server:request_id().
 execute_wrapped_request(HostType, Name, Parameters, Wrapper) ->
     execute_wrapped_request(HostType, ?DEFAULT_POOL_TAG, Name, Parameters, Wrapper).
 
 -spec execute_wrapped_request(
         mongooseim:host_type_or_global(), mongoose_wpool:tag(), query_name(), query_params(), request_wrapper()) ->
-    request_id().
+    gen_server:request_id().
 execute_wrapped_request(HostType, PoolTag, Name, Parameters, Wrapper)
   when is_atom(PoolTag), is_atom(Name), is_list(Parameters), is_function(Wrapper) ->
     sql_request(HostType, PoolTag, {sql_execute_wrapped, Name, Parameters, Wrapper}).
@@ -308,12 +305,13 @@ sql_query(HostType, Query) ->
 sql_query(HostType, PoolTag, Query) ->
     sql_call(HostType, PoolTag, {sql_query, Query}).
 
--spec sql_query_request(mongooseim:host_type_or_global(), Query :: any()) -> request_id().
+-spec sql_query_request(mongooseim:host_type_or_global(), Query :: any()) ->
+    gen_server:request_id().
 sql_query_request(HostType, Query) ->
     sql_query_request(HostType, ?DEFAULT_POOL_TAG, Query).
 
 -spec sql_query_request(mongooseim:host_type_or_global(), mongoose_wpool:tag(), Query :: any()) ->
-    request_id().
+    gen_server:request_id().
 sql_query_request(HostType, PoolTag, Query) ->
     sql_request(HostType, PoolTag, {sql_query, Query}).
 
@@ -343,12 +341,12 @@ sql_transaction(HostType, PoolTag, F) when is_atom(PoolTag), is_function(F) ->
 
 %% @doc SQL transaction based on a list of queries
 -spec sql_transaction_request(mongooseim:host_type_or_global(), fun() | maybe_improper_list()) ->
-    request_id().
+    gen_server:request_id().
 sql_transaction_request(HostType, Queries) ->
     sql_transaction_request(HostType, ?DEFAULT_POOL_TAG, Queries).
 
 -spec sql_transaction_request(mongooseim:host_type_or_global(), atom(), fun() | maybe_improper_list()) ->
-    request_id().
+    gen_server:request_id().
 sql_transaction_request(HostType, PoolTag, Queries) when is_atom(PoolTag), is_list(Queries) ->
     F = fun() -> lists:map(fun sql_query_t/1, Queries) end,
     sql_transaction_request(HostType, PoolTag, F);
@@ -842,12 +840,7 @@ apply_transaction_function(F) ->
     end.
 
 sql_query_internal(Query, #state{db_ref = DBRef, query_timeout = QueryTimeout}) ->
-    case mongoose_rdbms_backend:query(DBRef, Query, QueryTimeout) of
-        {error, "No SQL-driver information available."} ->
-            {updated, 0}; %% workaround for odbc bug
-        Result ->
-            Result
-    end.
+    mongoose_rdbms_backend:query(DBRef, Query, QueryTimeout).
 
 sql_dirty_internal(F, State) ->
     put_state(State),
@@ -919,16 +912,6 @@ abort_on_driver_error(_) ->
 db_engine(_HostType) ->
     try mongoose_backend:get_backend_name(global, ?MODULE)
     catch error:badarg -> undefined end.
-
-%% @doc Used to optimise queries for different databases.
-%% @todo Should be refactored to use host types with this module.
-%% Also, this parameter should not be global, but pool-name parameterized
--spec db_type() -> mssql | generic.
-db_type() ->
-    case mongoose_config:get_opt(rdbms_server_type) of
-        mssql -> mssql;
-        _ -> generic
-    end.
 
 -spec connect(options(), Retry :: non_neg_integer(), RetryAfter :: non_neg_integer(),
               MaxRetryDelay :: non_neg_integer()) -> {ok, term()} | {error, any()}.

@@ -18,13 +18,7 @@
     instance_id = <<>>,
     app_secret = <<>>}).
 
--import(distributed_helper, [mim/0, mim2/0, mim3/0, rpc/4,
-                             require_rpc_nodes/1
-                            ]).
-
--import(component_helper, [connect_component/1,
-                           disconnect_component/2,
-                           get_components/1]).
+-import(distributed_helper, [mim/0, mim2/0, mim3/0, rpc/4, require_rpc_nodes/1]).
 
 -import(domain_helper, [host_type/0]).
 -import(config_parser_helper, [mod_config/2, config/2]).
@@ -120,9 +114,8 @@ init_per_testcase(system_metrics_are_reported_to_configurable_google_analytics, 
     Config;
 init_per_testcase(xmpp_components_are_reported, Config) ->
     create_events_collection(),
-    Config1 = get_components(Config),
     enable_system_metrics(mim()),
-    Config1;
+    Config;
 init_per_testcase(xmpp_stanzas_counts_are_reported = CN, Config) ->
     create_events_collection(),
     enable_system_metrics(mim()),
@@ -179,7 +172,7 @@ system_metrics_are_not_reported_when_not_allowed(_Config) ->
 
 periodic_report_available(_Config) ->
     ReportsNumber = get_events_collection_size(),
-    mongoose_helper:wait_until(
+    wait_helper:wait_until(
         fun() ->
                 NewReportsNumber = get_events_collection_size(),
                 NewReportsNumber > ReportsNumber + 1
@@ -187,19 +180,19 @@ periodic_report_available(_Config) ->
         true).
 
 all_clustered_mongooses_report_the_same_client_id(_Config) ->
-    mongoose_helper:wait_until(fun is_host_count_reported/0, true),
+    wait_helper:wait_until(fun is_host_count_reported/0, true),
     all_event_have_the_same_client_id().
 
 system_metrics_are_reported_to_google_analytics_when_mim_starts(_Config) ->
-    mongoose_helper:wait_until(fun is_host_count_reported/0, true),
-    mongoose_helper:wait_until(fun are_modules_reported/0, true),
-    mongoose_helper:wait_until(fun events_are_reported_to_primary_tracking_id/0, true),
+    wait_helper:wait_until(fun is_host_count_reported/0, true),
+    wait_helper:wait_until(fun are_modules_reported/0, true),
+    wait_helper:wait_until(fun events_are_reported_to_primary_tracking_id/0, true),
     all_event_have_the_same_client_id().
 
 system_metrics_are_reported_to_configurable_google_analytics(_Config) ->
-    mongoose_helper:wait_until(fun is_host_count_reported/0, true),
-    mongoose_helper:wait_until(fun are_modules_reported/0, true),
-    mongoose_helper:wait_until(fun events_are_reported_to_both_tracking_ids/0, true),
+    wait_helper:wait_until(fun is_host_count_reported/0, true),
+    wait_helper:wait_until(fun are_modules_reported/0, true),
+    wait_helper:wait_until(fun events_are_reported_to_both_tracking_ids/0, true),
     all_event_have_the_same_client_id().
 
 system_metrics_are_reported_to_a_json_file(_Config) ->
@@ -208,13 +201,13 @@ system_metrics_are_reported_to_a_json_file(_Config) ->
     Fun = fun() ->
         ReportLastModified < rpc(mim(), filelib, last_modified, [ReportFilePath])
     end,
-    mongoose_helper:wait_until(Fun, true),
+    wait_helper:wait_until(Fun, true),
     %% now we read the content of the file and check if it's a valid JSON
     {ok, File} = rpc(mim(), file, read_file, [ReportFilePath]),
     jiffy:decode(File).
 
 module_opts_are_reported(_Config) ->
-    mongoose_helper:wait_until(fun are_modules_reported/0, true),
+    wait_helper:wait_until(fun are_modules_reported/0, true),
     Backend = mongoose_helper:mnesia_or_rdbms_backend(),
     MemBackend = ct_helper:get_internal_database(),
     check_module_backend(mod_bosh, MemBackend),
@@ -234,7 +227,7 @@ module_opts_are_reported(_Config) ->
     check_module_backend(mod_vcard, Backend).
 
 rdbms_module_opts_are_reported(_Config) ->
-    mongoose_helper:wait_until(fun are_modules_reported/0, true),
+    wait_helper:wait_until(fun are_modules_reported/0, true),
     check_module_backend(mod_auth_token, rdbms),
     check_module_backend(mod_inbox, rdbms),
     check_module_backend(mod_mam, rdbms).
@@ -243,41 +236,41 @@ check_module_backend(Module, Backend) ->
     check_module_opt(Module, <<"backend">>, atom_to_binary(Backend)).
 
 mongoose_version_is_reported(_Config) ->
-    mongoose_helper:wait_until(fun is_mongoose_version_reported/0, true).
+    wait_helper:wait_until(fun is_mongoose_version_reported/0, true).
 
 cluster_uptime_is_reported(_Config) ->
-    mongoose_helper:wait_until(fun is_cluster_uptime_reported/0, true).
+    wait_helper:wait_until(fun is_cluster_uptime_reported/0, true).
 
-xmpp_components_are_reported(Config) ->
-    CompOpts = ?config(component1, Config),
-    {Component, Addr, _} = connect_component(CompOpts),
-    mongoose_helper:wait_until(fun are_xmpp_components_reported/0, true),
-    mongoose_helper:wait_until(fun more_than_one_component_is_reported/0, true),
-    disconnect_component(Component, Addr).
+xmpp_components_are_reported(_Config) ->
+    CompOpts = component_helper:spec(component1),
+    {Component, Addr, _} = component_helper:connect_component(CompOpts),
+    wait_helper:wait_until(fun are_xmpp_components_reported/0, true),
+    wait_helper:wait_until(fun more_than_one_component_is_reported/0, true),
+    component_helper:disconnect_component(Component, Addr).
 
 api_are_reported(_Config) ->
-    mongoose_helper:wait_until(fun is_api_reported/0, true).
+    wait_helper:wait_until(fun is_api_reported/0, true).
 
 transport_mechanisms_are_reported(_Config) ->
-    mongoose_helper:wait_until(fun are_transport_mechanisms_reported/0, true).
+    wait_helper:wait_until(fun are_transport_mechanisms_reported/0, true).
 
 outgoing_pools_are_reported(_Config) ->
-    mongoose_helper:wait_until(fun are_outgoing_pools_reported/0, true).
+    wait_helper:wait_until(fun are_outgoing_pools_reported/0, true).
 
 xmpp_stanzas_counts_are_reported(Config) ->
     escalus:story(Config, [{alice,1}, {bob,1}], fun(Alice, Bob) ->
-        mongoose_helper:wait_until(fun is_message_count_reported/0, true),
-        mongoose_helper:wait_until(fun is_iq_count_reported/0, true),
+        wait_helper:wait_until(fun is_message_count_reported/0, true),
+        wait_helper:wait_until(fun is_iq_count_reported/0, true),
         Sent = get_metric_value(<<"xmppMessageSent">>),
         Received = get_metric_value(<<"xmppMessageReceived">>),
         escalus:send(Alice, escalus_stanza:chat_to(Bob, <<"Hi">>)),
         escalus:assert(is_chat_message, [<<"Hi">>], escalus:wait_for_stanza(Bob)),
         F = fun() -> assert_message_count_is_incremented(Sent, Received) end,
-        mongoose_helper:wait_until(F, ok, #{sleep_time => 500, time_left => timer:seconds(20)})
+        wait_helper:wait_until(F, ok, #{sleep_time => 500, time_left => timer:seconds(20)})
     end).
 
 config_type_is_reported(_Config) ->
-    mongoose_helper:wait_until(fun is_config_type_reported/0, true).
+    wait_helper:wait_until(fun is_config_type_reported/0, true).
 
 just_removed_from_config_logs_question(_Config) ->
     disable_system_metrics(mim3()),
@@ -296,7 +289,7 @@ in_config_unmodified_logs_request_for_agreement(_Config) ->
     FilterFun = fun(_, Msg) ->
                         re:run(Msg, "MongooseIM docs", [global]) /= nomatch
                 end,
-    mongoose_helper:wait_until(fun() -> length(logger_ct_backend:recv(FilterFun)) end, 1),
+    wait_helper:wait_until(fun() -> length(logger_ct_backend:recv(FilterFun)) end, 1),
     %% CLEAN
     logger_ct_backend:stop_capture(),
     disable_system_metrics(mim()).

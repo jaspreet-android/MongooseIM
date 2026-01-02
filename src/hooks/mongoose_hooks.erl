@@ -42,7 +42,7 @@
          bind2_stream_features/2,
          bind2_enable_features/3,
          sasl2_start/3,
-         sasl2_success/3]).
+         sasl2_success/4]).
 
 -export([get_pep_recipients/2,
          filter_pep_recipient/3,
@@ -143,6 +143,8 @@
 -export([remove_domain/2,
          node_cleanup/1,
          node_cleanup_for_host_type/2]).
+
+-export([push_event/2]).
 
 -ignore_xref([remove_domain/2]).
 -ignore_xref([mam_archive_sync/1, mam_muc_archive_sync/1]).
@@ -515,13 +517,14 @@ sasl2_start(HostType, Acc, Element) ->
     run_hook_for_host_type(sasl2_start, HostType, Acc, Params).
 
 %% If SASL authentication is successful, inline features can be triggered
--spec sasl2_success(HostType, Acc, Params) -> Result when
+-spec sasl2_success(HostType, Acc, Params, Creds) -> Result when
     HostType :: mongooseim:host_type(),
     Acc :: mongoose_acc:t(),
     Params :: mod_sasl2:c2s_state_data(),
+    Creds :: mongoose_credentials:t(),
     Result :: mongoose_acc:t().
-sasl2_success(HostType, Acc, Params) ->
-    run_hook_for_host_type(sasl2_success, HostType, Acc, Params).
+sasl2_success(HostType, Acc, Params, Creds) ->
+    run_hook_for_host_type(sasl2_success, HostType, Acc, Params#{creds => Creds}).
 
 -spec check_bl_c2s(IP) -> Result when
     IP ::  inet:ip_address(),
@@ -650,7 +653,7 @@ sm_filter_offline_message(HostType, From, To, Packet) ->
 
 -spec sm_register_connection(HostType, SID, JID, Info) -> Result when
     HostType :: mongooseim:host_type(),
-    SID :: 'undefined' | ejabberd_sm:sid(),
+    SID :: ejabberd_sm:sid(),
     JID :: jid:jid(),
     Info :: ejabberd_sm:info(),
     Result :: ok.
@@ -660,7 +663,7 @@ sm_register_connection(HostType, SID, JID, Info) ->
 
 -spec sm_remove_connection(Acc, SID, JID, Info, Reason) -> Result when
     Acc :: mongoose_acc:t(),
-    SID :: 'undefined' | ejabberd_sm:sid(),
+    SID :: ejabberd_sm:sid(),
     JID :: jid:jid(),
     Info :: ejabberd_sm:info(),
     Reason :: ejabberd_sm:close_reason(),
@@ -1375,6 +1378,11 @@ mod_global_distrib_known_recipient(GlobalHost, From, To, LocalHost) ->
 mod_global_distrib_unknown_recipient(GlobalHost, Info) ->
     run_hook_for_host_type(mod_global_distrib_unknown_recipient, GlobalHost, Info, #{}).
 
+%%% @doc The `push_event' hook is called when `mod_event_pusher' publishes an event.
+-spec push_event(mongoose_acc:t(), mod_event_pusher:event()) -> mod_event_pusher:push_event_acc().
+push_event(Acc, Event) ->
+    HostType = mongoose_acc:host_type(Acc),
+    run_hook_for_host_type(push_event, HostType, #{acc => Acc, metadata => #{}}, #{event => Event}).
 
 %%%----------------------------------------------------------------------
 %%% Internal functions

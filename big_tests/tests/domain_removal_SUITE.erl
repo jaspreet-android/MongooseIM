@@ -66,16 +66,8 @@ end_per_suite(Config) ->
 %%%===================================================================
 %%% Group specific setup/teardown
 %%%===================================================================
-init_per_group(Group, Config)
-  when Group =:= mam_removal_incremental; Group =:= inbox_removal_incremental ->
-    case rpc(mim(), mongoose_rdbms, db_engine, [host_type()]) of
-        odbc -> {skip, mssql_not_supported_for_incremental_removals};
-        _ -> do_init_per_group(Group, Config)
-    end;
-init_per_group(Group, Config) ->
-    do_init_per_group(Group, Config).
 
-do_init_per_group(auth_removal = Group, Config) ->
+init_per_group(auth_removal = Group, Config) ->
     case is_internal_or_rdbms() of
         true ->
             HostTypes = domain_helper:host_types(),
@@ -86,7 +78,7 @@ do_init_per_group(auth_removal = Group, Config) ->
         false ->
             {skip, require_internal_or_rdbms}
     end;
-do_init_per_group(Group, Config) ->
+init_per_group(Group, Config) ->
     case mongoose_helper:is_rdbms_enabled(host_type()) of
         true ->
             HostTypes = domain_helper:host_types(),
@@ -339,7 +331,7 @@ offline_removal(Config) ->
         % wait until message is stored
         BobJid = jid:from_binary(escalus_client:full_jid(Bob)),
         {LUser, LServer} = jid:to_lus(BobJid),
-        mongoose_helper:wait_until(
+        wait_helper:wait_until(
           fun() -> mongoose_helper:total_offline_messages({LUser, LServer}) end, 1),
         % check messages in DB
         ?assertMatch({ok, [_]}, rpc(mim(), mod_offline_rdbms, fetch_messages, [host_type(), BobJid])),
@@ -357,7 +349,7 @@ markers_removal(Config) ->
         ChatMarker = escalus_stanza:chat_marker(Alice, <<"displayed">>, MsgId),
         escalus:send(Bob, ChatMarker),
         escalus:wait_for_stanza(Alice),
-        mongoose_helper:wait_until(
+        wait_helper:wait_until(
           fun() -> 1 =< mongoose_helper:generic_count(mod_smart_markers) end, true),
         % check messages in DB
         AliceJid = jid:from_binary(escalus_client:full_jid(Alice)),
@@ -574,7 +566,7 @@ block_muclight_user(Bob, Alice) ->
 my_banana(NS) ->
     #xmlel{
         name = <<"my_element">>,
-        attrs = [{<<"xmlns">>, NS}],
+        attrs = #{<<"xmlns">> => NS},
         children = [#xmlcdata{content = <<"banana">>}]}.
 
 get_private_data(Elem, Tag, NS) ->

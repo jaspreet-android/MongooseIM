@@ -107,7 +107,7 @@ acks_test_cases() ->
 %%--------------------------------------------------------------------
 
 init_per_suite(Config) ->
-    instrument_helper:start(instrumentation_events(), negative_instrumentation_events()),
+    instrument_helper:start(instrumentation_events()),
     Config1 = dynamic_modules:save_modules(host_type(), Config),
     escalus:init_per_suite([{escalus_user_db, {module, escalus_ejabberd}} | Config1]).
 
@@ -191,13 +191,6 @@ create_and_terminate_session(Config) ->
     Terminate = escalus_bosh:session_termination_body(get_bosh_rid(Conn), Sid),
     ok = bosh_send_raw(Conn, Terminate),
 
-    % Assert that correct events have been executed
-    [instrument_helper:assert(Event, Label, fun(#{byte_size := BS}) -> BS > 0 end)
-     || {Event, Label} <- instrumentation_events(), Event =/= c2s_message_processed],
-
-    %% Verify C2S listener is not used
-    instrument_helper:assert_not_emitted(negative_instrumentation_events()),
-
     %% Assert the session was terminated.
     wait_for_zero_bosh_sessions().
 
@@ -209,7 +202,7 @@ reject_connection_when_mod_bosh_is_disabled(Config) ->
     {{<<"200">>, <<"OK">>}, _Headers, RespBody, _, _} = Result,
     {ok, #xmlel{attrs = RespAttrs}} = exml:parse(RespBody),
 
-    ?assertMatch(#{<<"type">> := <<"terminate">>}, maps:from_list(RespAttrs)),
+    ?assertMatch(#{<<"type">> := <<"terminate">>}, RespAttrs),
     ?assertEqual([], get_bosh_sessions()),
     fusco_cp:stop(Client).
 
@@ -217,14 +210,14 @@ do_not_accept_0_hold_value(Config) ->
     {Domain, Path, Client} = get_fusco_connection(Config),
     Rid = rand:uniform(1000000),
     Body0 = escalus_bosh:session_creation_body(2, <<"1.0">>, <<"en">>, Rid, Domain, nil),
-    #xmlel{attrs = Attrs0} = Body0,
-    Attrs = lists:keyreplace(<<"hold">>, 1, Attrs0, {<<"hold">>, <<"0">>}),
+    Attrs0 = Body0#xmlel.attrs,
+    Attrs = Attrs0#{<<"hold">> := <<"0">>},
     Body = Body0#xmlel{attrs = Attrs},
     Result = fusco_request(Client, <<"POST">>, Path, exml:to_iolist(Body)),
     {{<<"200">>, <<"OK">>}, _Headers, RespBody, _, _} = Result,
     {ok, #xmlel{attrs = RespAttrs}} = exml:parse(RespBody),
 
-    ?assertMatch(#{<<"type">> := <<"terminate">>}, maps:from_list(RespAttrs)),
+    ?assertMatch(#{<<"type">> := <<"terminate">>}, RespAttrs),
     ?assertEqual([], get_bosh_sessions()),
     fusco_cp:stop(Client).
 
@@ -232,22 +225,22 @@ accept_higher_hold_value(Config) ->
     {Domain, Path, Client} = get_fusco_connection(Config),
     Rid = rand:uniform(1000000),
     Body0 = escalus_bosh:session_creation_body(2, <<"1.0">>, <<"en">>, Rid, Domain, nil),
-    #xmlel{attrs = Attrs0} = Body0,
-    Attrs = lists:keyreplace(<<"hold">>, 1, Attrs0, {<<"hold">>, <<"2">>}),
+    Attrs0 = Body0#xmlel.attrs,
+    Attrs = Attrs0#{<<"hold">> := <<"2">>},
     Body = Body0#xmlel{attrs = Attrs},
     Result = fusco_request(Client, <<"POST">>, Path, exml:to_iolist(Body)),
     {{<<"200">>, <<"OK">>}, _Headers, RespBody, _, _} = Result,
     {ok, #xmlel{attrs = RespAttrs}} = exml:parse(RespBody),
 
     %% Server returns its hold value, which is 1
-    #{<<"hold">> := <<"1">>, <<"sid">> := SID} = maps:from_list(RespAttrs),
+    #{<<"hold">> := <<"1">>, <<"sid">> := SID} = RespAttrs,
     ?assertMatch([_], get_bosh_sessions()),
 
     TerminateBody = escalus_bosh:session_termination_body(Rid + 1, SID),
     Res2 = fusco_request(Client, <<"POST">>, Path, exml:to_iolist(TerminateBody)),
     {{<<"200">>, <<"OK">>}, _, RespBody2, _, _} = Res2,
     {ok, #xmlel{attrs = RespAttrs2}} = exml:parse(RespBody2),
-    case maps:from_list(RespAttrs2) of
+    case RespAttrs2 of
         #{<<"type">> := <<"terminate">>} ->
             ok;
         #{<<"sid">> := SID} ->
@@ -256,7 +249,7 @@ accept_higher_hold_value(Config) ->
             Res3 = fusco_request(Client, <<"POST">>, Path, exml:to_iolist(EmptyBody)),
             {{<<"200">>, <<"OK">>}, _, RespBody3, _, _} = Res3,
             {ok, #xmlel{attrs = RespAttrs3}} = exml:parse(RespBody3),
-            ?assertMatch(#{<<"type">> := <<"terminate">>}, maps:from_list(RespAttrs3))
+            ?assertMatch(#{<<"type">> := <<"terminate">>}, RespAttrs3)
     end,
     ?assertEqual([], get_bosh_sessions()),
     fusco_cp:stop(Client).
@@ -356,6 +349,8 @@ interleave_requests(Config) ->
         Msg3 = <<"3rd!">>,
         Msg4 = <<"4th!">>,
 
+        TS = instrument_helper:timestamp(),
+
         send_message_with_rid(Carol, Geralt, Rid + 1, Sid, Msg2),
         send_message_with_rid(Carol, Geralt, Rid, Sid, Msg1),
 
@@ -371,8 +366,10 @@ interleave_requests(Config) ->
         escalus:assert(is_chat_message, [Msg4],
                        escalus_client:wait_for_stanza(Geralt)),
 
-        [instrument_helper:assert(Event, Label, fun(#{byte_size := BS}) -> BS > 0;
-                                                   (#{time := Time}) -> Time > 0 end)
+        Pred = fun(#{byte_size := BS}) -> BS > 0;
+                  (#{time := Time}) -> Time > 0
+               end,
+        [instrument_helper:assert(Event, Label, Pred, #{min_timestamp => TS})
          || {Event, Label} <- instrumentation_events()],
 
         true = is_bosh_connected(Carol)
@@ -691,7 +688,7 @@ reply_in_time(ConfigIn) ->
 server_acks(Config) ->
     escalus:story(Config, [{carol, 1}, {geralt, 1}], fun(Carol, Geralt) ->
         bosh_set_active(Carol, false),
-        ExpectedRid = list_to_binary(integer_to_list(get_bosh_rid(Carol))),
+        ExpectedRid = integer_to_binary(get_bosh_rid(Carol)),
         escalus_client:send(Carol, escalus_stanza:chat_to(Geralt, <<"1st!">>)),
         escalus_client:send(Carol, escalus_stanza:chat_to(Geralt, <<"2nd!">>)),
         timer:sleep(200),
@@ -897,8 +894,7 @@ wait_for_stanza(Client) ->
 
 ack_body(Body, Rid) ->
     Attrs = Body#xmlel.attrs,
-    Ack = {<<"ack">>, list_to_binary(integer_to_list(Rid))},
-    NewAttrs = lists:keystore(<<"ack">>, 1, Attrs, Ack),
+    NewAttrs = Attrs#{<<"ack">> => integer_to_binary(Rid)},
     Body#xmlel{attrs = NewAttrs}.
 
 set_client_acks(SessionPid, Enabled) ->
@@ -915,52 +911,44 @@ wait_for_session_close(Sid) ->
     wait_for_session_close(Sid, ?INACTIVITY).
 
 wait_for_session_close(Sid, LeftTime) ->
-    mongoose_helper:wait_until(fun() -> is_session_alive(Sid) end, false,
-                               #{
-                                 time_left => timer:seconds(10),
-                                 time_sleep => LeftTime,
-                                 name => is_session_alive
-                                }).
+    wait_helper:wait_until(fun() -> is_session_alive(Sid) end, false,
+                           #{
+                             time_left => timer:seconds(10),
+                             time_sleep => LeftTime,
+                             name => is_session_alive
+                            }).
 
 wait_for_handler(Pid, Count) ->
-    mongoose_helper:wait_until(fun() -> length(get_handlers(Pid)) end, Count,
-                                #{
-                                 time_left => timer:seconds(10),
-                                 time_sleep => timer:seconds(1),
-                                 name => get_handlers
-                                }).
+    wait_helper:wait_until(fun() -> length(get_handlers(Pid)) end, Count,
+                           #{
+                             time_left => timer:seconds(10),
+                             time_sleep => timer:seconds(1),
+                             name => get_handlers
+                            }).
 
 
 wait_for_handler(Pid, Count, LeftTime) ->
-    mongoose_helper:wait_until(fun() -> length(get_handlers(Pid)) end, Count,
-                               #{
-                                 time_left => LeftTime,
-                                 time_sleep => timer:seconds(1),
-                                 name => get_handlers
-                                }).
+    wait_helper:wait_until(fun() -> length(get_handlers(Pid)) end, Count,
+                           #{
+                             time_left => LeftTime,
+                             time_sleep => timer:seconds(1),
+                             name => get_handlers
+                            }).
 
 wait_until_user_has_no_stanzas(User) ->
-        mongoose_helper:wait_until(fun() ->
-                                       escalus_assert:has_no_stanzas(User)
-                                   end, ok, #{left_time => 2 * timer:seconds(?INACTIVITY)}).
+    wait_helper:wait_until(fun() ->
+                                   escalus_assert:has_no_stanzas(User)
+                           end, ok, #{left_time => 2 * timer:seconds(?INACTIVITY)}).
 
 wait_for_zero_bosh_sessions() ->
-    mongoose_helper:wait_until(fun() ->
-                                       get_bosh_sessions()
-                               end,
-                               [],
-                               #{name => get_bosh_sessions}).
+    wait_helper:wait_until(fun() ->
+                                   get_bosh_sessions()
+                           end,
+                           [],
+                           #{name => get_bosh_sessions}).
 
 instrumentation_events() ->
     instrument_helper:declared_events(mod_bosh, [])
-    ++ instrument_helper:declared_events(mongoose_c2s, [global])
-    ++ [{c2s_message_processed, #{host_type => host_type()}}].
-
-negative_instrumentation_events() ->
-    [{Name, #{}} || Name <- negative_instrumentation_events_names()].
-
-negative_instrumentation_events_names() ->
-    [c2s_tcp_data_out,
-     c2s_tcp_data_in,
-     c2s_tls_data_out,
-     c2s_tls_data_in].
+    ++ [{c2s_message_processed, #{host_type => host_type()}},
+        {xmpp_element_out, #{host_type => host_type(), connection_type => c2s}},
+        {xmpp_element_in, #{host_type => host_type(), connection_type => c2s}}].

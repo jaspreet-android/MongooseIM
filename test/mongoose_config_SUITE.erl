@@ -35,7 +35,6 @@ end_per_suite(_Config) ->
     mongoose_config:erase_opts(),
     mnesia:stop(),
     mnesia:delete_schema([node()]),
-    [ok = application:stop(App) || App <- [prometheus_cowboy, prometheus_httpd, prometheus]],
     ok.
 
 init_per_testcase(_TestCase, Config) ->
@@ -176,7 +175,6 @@ minimal_config_opts() ->
       listen => [],
       loglevel => warning,
       outgoing_pools => [],
-      rdbms_server_type => generic,
       registration_timeout => 600,
       routing_modules => mongoose_router:default_routing_modules(),
       services => #{},
@@ -186,7 +184,7 @@ minimal_config_opts() ->
       {auth, <<"localhost">>} => config_parser_helper:default_auth(),
       {modules, <<"localhost">>} => #{},
       {replaced_wait_timeout, <<"localhost">>} => 2000,
-      {s2s, <<"localhost">>} => config_parser_helper:default_s2s(),
+      {s2s, <<"localhost">>} => config_parser_helper:default_config([s2s]),
       instrumentation => config_parser_helper:default_config([instrumentation])}.
 
 start_slave_node(Config) ->
@@ -207,12 +205,7 @@ do_start_slave_node() ->
     %% /usr/lib/erlang/lib/
     %% So add_paths is NOT enough here
     ok = rpc:call(SlaveNode, code, add_pathsa, [lists:reverse(code_paths())]),
-    check_that_p1_tls_is_correct(SlaveNode),
     SlaveNode.
-
-check_that_p1_tls_is_correct(SlaveNode) ->
-    ?assertEqual(fast_tls:module_info(md5),
-                 rpc:call(SlaveNode, fast_tls, module_info, [md5])).
 
 stop_slave_node(Config) ->
     ct_slave:stop(slave_node(Config)),

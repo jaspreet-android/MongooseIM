@@ -6,10 +6,8 @@
 %% (it depends on the hook handlers).
 -module(mongoose_s2s_lib).
 -export([make_from_to/2,
-         timeout/0,
-         domain_utf8_to_ascii/1,
+         domain_utf8_to_ascii/2,
          check_shared_secret/2,
-         lookup_certfile/1,
          choose_pid/2,
          need_more_connections/2,
          needed_extra_connections_number_if_allowed/2,
@@ -28,17 +26,22 @@
 make_from_to(#jid{lserver = FromServer}, #jid{lserver = ToServer}) ->
     {FromServer, ToServer}.
 
-timeout() ->
-    600000.
-
 %% Converts a UTF-8 domain to ASCII (IDNA)
--spec domain_utf8_to_ascii(jid:server()) -> jid:server() | false.
+-spec domain_utf8_to_ascii(string() | jid:lserver(), binary) -> jid:lserver() | false;
+                          (string() | jid:lserver(), string) -> string() | false.
+domain_utf8_to_ascii(Domain, binary) ->
+    Result = domain_utf8_to_ascii(Domain),
+    false =/= Result andalso list_to_binary(Result);
+domain_utf8_to_ascii(Domain, string) ->
+    domain_utf8_to_ascii(Domain).
+
+-spec domain_utf8_to_ascii(string() | jid:lserver()) -> string() | false.
 domain_utf8_to_ascii(Domain) ->
     case catch idna:utf8_to_ascii(Domain) of
         {'EXIT', _} ->
             false;
         AsciiDomain ->
-            list_to_binary(AsciiDomain)
+            AsciiDomain
     end.
 
 -spec check_shared_secret(HostType, StoredSecretResult) -> ok | {update, NewSecret} when
@@ -71,21 +74,12 @@ check_shared_secret(HostType, StoredSecretResult) ->
 
 -spec make_random_secret() -> ejabberd_s2s:base16_secret().
 make_random_secret() ->
-    base16:encode(crypto:strong_rand_bytes(10)).
+    binary:encode_hex(crypto:strong_rand_bytes(10), lowercase).
 
 -spec get_shared_secret_from_config(mongooseim:host_type()) ->
     {ok, ejabberd_s2s:base16_secret()} | {error, not_found}.
 get_shared_secret_from_config(HostType) ->
     mongoose_config:lookup_opt([{s2s, HostType}, shared]).
-
--spec lookup_certfile(mongooseim:host_type()) -> {ok, string()} | {error, not_found}.
-lookup_certfile(HostType) ->
-    case mongoose_config:lookup_opt({domain_certfile, HostType}) of
-        {ok, CertFile} ->
-            CertFile;
-        {error, not_found} ->
-            mongoose_config:lookup_opt([{s2s, HostType}, certfile])
-    end.
 
 %% Prefers the local connection (i.e. not on the remote node)
 -spec choose_pid(From :: jid:jid(), Pids :: s2s_pids()) -> pid().

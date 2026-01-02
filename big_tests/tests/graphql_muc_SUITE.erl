@@ -50,6 +50,7 @@ user_muc_tests() ->
      user_try_delete_nonexistent_room,
      user_try_delete_room_by_not_owner,
      user_try_create_instant_room_with_nonexistent_domain,
+     user_try_create_instant_room_with_nonexistent_subdomain,
      user_try_create_instant_room_with_invalid_args,
      user_list_rooms,
      user_try_list_rooms_for_nonexistent_domain,
@@ -114,6 +115,7 @@ admin_muc_tests() ->
      admin_create_and_delete_room,
      admin_create_room_with_unprepped_name,
      admin_try_create_instant_room_with_nonexistent_domain,
+     admin_try_create_instant_room_with_nonexistent_subdomain,
      admin_try_create_instant_room_with_nonexistent_user,
      admin_try_create_instant_room_with_invalid_args,
      admin_try_delete_nonexistent_room,
@@ -426,7 +428,17 @@ admin_try_create_instant_room_with_nonexistent_domain(Config) ->
 
 admin_try_create_instant_room_with_nonexistent_domain_story(Config, Alice) ->
     Res = create_instant_room(jid:make_bare(rand_name(), <<"unknown">>), Alice, <<"Ali">>, Config),
-    ?assertNotEqual(nomatch, binary:match(get_err_msg(Res), <<"not found">>)).
+    ?assertEqual(<<"Error while creating a room">>, get_err_msg(Res)).
+
+admin_try_create_instant_room_with_nonexistent_subdomain(Config) ->
+    escalus:fresh_story_with_config(Config, [{alice, 1}],
+                                    fun admin_try_create_instant_room_with_nonexistent_subdomain_story/2).
+
+admin_try_create_instant_room_with_nonexistent_subdomain_story(Config, Alice) ->
+    TopDomain = escalus_client:server(Alice),
+    RoomJID = jid:make_bare(rand_name(), <<"unknown_muc.", TopDomain/binary>>),
+    Res = create_instant_room(RoomJID, Alice, <<"Ali">>, Config),
+    ?assertEqual(<<"Could not create room due to incorrect domain">>, get_err_msg(Res)).
 
 admin_try_create_instant_room_with_nonexistent_user(Config) ->
     RoomJID = jid:make_bare(rand_name(), muc_helper:muc_host()),
@@ -1131,7 +1143,17 @@ user_try_create_instant_room_with_nonexistent_domain(Config) ->
 user_try_create_instant_room_with_nonexistent_domain_story(Config, Alice) ->
     RoomJID = jid:make_bare(rand_name(), <<"unknown">>),
     Res = user_create_instant_room(Alice, RoomJID, <<"Ali">>, Config),
-    ?assertNotEqual(nomatch, binary:match(get_err_msg(Res), <<"not found">>)).
+    ?assertEqual(<<"Error while creating a room">>, get_err_msg(Res)).
+
+user_try_create_instant_room_with_nonexistent_subdomain(Config) ->
+    escalus:fresh_story_with_config(Config, [{alice, 1}],
+                                    fun user_try_create_instant_room_with_nonexistent_subdomain_story/2).
+
+user_try_create_instant_room_with_nonexistent_subdomain_story(Config, Alice) ->
+    TopDomain = escalus_client:server(Alice),
+    RoomJID = jid:make_bare(rand_name(), <<"unknown_muc.", TopDomain/binary>>),
+    Res = user_create_instant_room(Alice, RoomJID, <<"Ali">>, Config),
+    ?assertEqual(<<"Could not create room due to incorrect domain">>, get_err_msg(Res)).
 
 user_try_create_instant_room_with_invalid_args(Config) ->
     escalus:fresh_story_with_config(Config, [{alice, 1}],
@@ -1303,7 +1325,7 @@ user_without_session_send_message_to_room_story(Config, Alice) ->
 terminate_user_session(Jid) ->
     ?assertEqual(ok, rpc(mim(), ejabberd_sm, terminate_session, [Jid, <<"Kicked">>])),
     F = fun() -> rpc(mim(), ejabberd_sm, get_user_resources, [Jid]) end,
-    mongoose_helper:wait_until(F, [], #{time_left => timer:seconds(5)}).
+    wait_helper:wait_until(F, [], #{time_left => timer:seconds(5)}).
 
 user_get_room_config(Config) ->
     muc_helper:story_with_room(Config, [], [{alice, 1}, {bob, 1}],
@@ -1876,7 +1898,7 @@ assert_is_message_correct(RoomJID, SenderNick, Type, Text, ReceivedMessage) ->
 enter_room(RoomJID, User, Nick) ->
     JID = jid:to_binary(jid:replace_resource(RoomJID, Nick)),
     Pres = escalus_stanza:to(escalus_stanza:presence(<<"available">>,
-        [#xmlel{ name = <<"x">>, attrs=[{<<"xmlns">>, <<"http://jabber.org/protocol/muc">>}]}]),
+        [#xmlel{ name = <<"x">>, attrs=#{<<"xmlns">> => <<"http://jabber.org/protocol/muc">>}}]),
         JID),
     escalus:send(User, Pres),
     escalus:wait_for_stanza(User).
@@ -1925,7 +1947,7 @@ assert_default_room_config(Response) ->
                    <<"logging">> := false}, get_ok_value(?GET_ROOM_CONFIG_PATH, Response)).
 
 atom_to_enum_item(null) -> null;
-atom_to_enum_item(Atom) -> list_to_binary(string:to_upper(atom_to_list(Atom))).
+atom_to_enum_item(Atom) -> string:uppercase(atom_to_binary(Atom)).
 
 get_room_name() ->
     Domain = domain_helper:domain(),

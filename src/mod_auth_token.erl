@@ -131,7 +131,7 @@ validity_period_spec() ->
 serialize(#token{mac_signature = undefined} = T) -> error(incomplete_token, [T]);
 serialize(#token{token_body = undefined} = T)    -> error(incomplete_token, [T]);
 serialize(#token{token_body = Body, mac_signature = MAC}) ->
-    <<Body/bytes, (field_separator()), (base16:encode(MAC))/bytes>>.
+    <<Body/bytes, (field_separator()), (binary:encode_hex(MAC, lowercase))/bytes>>.
 
 %% #token{} contains fields which are:
 %% - primary - these have to be supplied on token creation,
@@ -297,7 +297,7 @@ create_token_response(Acc, From, IQ) ->
         {#token{} = AccessToken, #token{} = RefreshToken} ->
             IQ#iq{type = result,
                   sub_el = [#xmlel{name = <<"items">>,
-                                   attrs = [{<<"xmlns">>, ?NS_ESL_TOKEN_AUTH}],
+                                   attrs = #{<<"xmlns">> => ?NS_ESL_TOKEN_AUTH},
                                    children = [token_to_xmlel(AccessToken),
                                                token_to_xmlel(RefreshToken)]}]};
         {_, _} -> {error, mongoose_xmpp_errors:internal_server_error()}
@@ -356,8 +356,8 @@ token_to_xmlel(#token{type = Type} = T) ->
                       access -> <<"access_token">>;
                       refresh -> <<"refresh_token">>
                   end,
-           attrs = [{<<"xmlns">>, ?NS_ESL_TOKEN_AUTH}],
-           children = [#xmlcdata{content = jlib:encode_base64(serialize(T))}]}.
+           attrs = #{<<"xmlns">> => ?NS_ESL_TOKEN_AUTH},
+           children = [#xmlcdata{content = base64:encode(serialize(T))}]}.
 
 %% args: Token with Mac decoded from transport, #token
 %% is shared between tokens. Introduce other container types if
@@ -372,14 +372,14 @@ get_token_as_record(BToken) ->
                user_jid = jid:from_binary(User)},
     T1 = case {BType, Rest} of
              {<<"access">>, [BMAC]} ->
-                 T#token{mac_signature = base16:decode(BMAC)};
+                 T#token{mac_signature = binary:decode_hex(BMAC)};
              {<<"refresh">>, [BSeqNo, BMAC]} ->
                  T#token{sequence_no = ?B2I(BSeqNo),
-                         mac_signature = base16:decode(BMAC)};
+                         mac_signature = binary:decode_hex(BMAC)};
              {<<"provision">>, [BVCard, BMAC]} ->
                  {ok, VCard} = exml:parse(BVCard),
                  T#token{vcard = VCard,
-                         mac_signature = base16:decode(BMAC)}
+                         mac_signature = binary:decode_hex(BMAC)}
          end,
     T1#token{token_body = join_fields(T1)}.
 

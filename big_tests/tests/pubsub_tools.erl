@@ -56,7 +56,8 @@ create_node(User, Node, Options) ->
                 #xmlel{children = [
                     #xmlel{children = [CreateEl | OtherEls]} = PubsubEl
                 ]} = IQ = Request0,
-                NewCreateEl = CreateEl#xmlel{attrs = [{<<"type">>, Type} | CreateEl#xmlel.attrs]},
+                Attrs = CreateEl#xmlel.attrs,
+                NewCreateEl = CreateEl#xmlel{attrs = Attrs#{<<"type">> => Type}},
                 NewPubsubEl = PubsubEl#xmlel{children = [NewCreateEl | OtherEls]},
                 IQ#xmlel{children = [NewPubsubEl]}
         end,
@@ -120,7 +121,7 @@ publish_without_node_attr(User, ItemId, Node, Options) ->
     Request = publish_request(Id, User, ItemId, Node, Options),
     [PubSubEl] = Request#xmlel.children,
     [PublishEl] = PubSubEl#xmlel.children,
-    PublishElDefect = PublishEl#xmlel{ attrs = [] },
+    PublishElDefect = PublishEl#xmlel{ attrs = #{} },
     RequestDefect = Request#xmlel{ children = [PubSubEl#xmlel{ children = [PublishElDefect] }] },
     send_request_and_receive_response(User, RequestDefect, Id, Options).
 
@@ -142,7 +143,11 @@ publish_request(Id, User, ItemId, Node, Options, PublishOptions) ->
 
 retract_item(User, Node, ItemId, Options) ->
     Id = id(User, Node, <<"retract">>),
-    Request = escalus_pubsub_stanza:retract(User, Id, Node, ItemId),
+    Attrs = case proplists:get_value(notify, Options) of
+        Bool when is_boolean(Bool) -> #{<<"notify">> => atom_to_binary(Bool)};
+        undefined -> #{}
+    end,
+    Request = escalus_pubsub_stanza:retract(User, Id, Node, ItemId, Attrs),
     send_request_and_receive_response(User, Request, Id, Options).
 
 get_all_items(User, {_, NodeName} = Node, Options) ->
@@ -255,6 +260,10 @@ modify_node_subscriptions(User, ModifiedSubscriptions, Node, Options) ->
 receive_item_notification(User, ItemId, {NodeAddr, NodeName}, Options) ->
     Stanza = receive_notification(User, NodeAddr, Options),
     check_item_notification(Stanza, ItemId, {NodeAddr, NodeName}, Options).
+
+receive_retract_notification(User, ItemId, {NodeAddr, NodeName}, Options) ->
+    Stanza = receive_notification(User, NodeAddr, Options),
+    check_retract_notification(Stanza, ItemId, {NodeAddr, NodeName}).
 
 receive_subscription_notification(User, Subscription, {NodeAddr, NodeName}, Options) ->
     Stanza = receive_notification(User, NodeAddr, Options),
@@ -388,21 +397,23 @@ check_node_creation_notification(Response, NodeName) ->
     Response.
 
 check_item_notification(Response, ItemId, {NodeAddr, NodeName}, Options) ->
-    try
-        do_check_item_notification(Response, ItemId, {NodeAddr, NodeName}, Options)
-    catch Class:Reason:StackTrace ->
-              ct:pal("failed to check response=~p", [Response]),
-              erlang:raise(Class, Reason, StackTrace)
-    end,
-    Response.
-
-do_check_item_notification(Response, ItemId, {NodeAddr, NodeName}, Options) ->
     check_notification(Response, NodeAddr),
     true = escalus_pred:has_type(<<"headline">>, Response),
     Items = exml_query:path(Response, [{element, <<"event">>},
                                        {element, <<"items">>}]),
     check_collection_header(Response, Options),
     check_items(Items, [ItemId], NodeName),
+    ok.
+
+check_retract_notification(Response, ItemId, {NodeAddr, NodeName}) ->
+    check_notification(Response, NodeAddr),
+    true = escalus_pred:has_type(<<"headline">>, Response),
+    [#xmlel{ attrs = #{<<"xmlns">> := ?NS_PUBSUB_EVENT} } = Event] =
+        exml_query:subelements(Response, <<"event">>),
+    [#xmlel{ attrs = #{<<"node">> := NodeName} } = Items] =
+        exml_query:subelements(Event, <<"items">>),
+    [#xmlel{ attrs = #{<<"id">> := ItemId} }] =
+        exml_query:subelements(Items, <<"retract">>),
     ok.
 
 send_request_and_receive_response(User, Request, Id, Options) ->
@@ -574,7 +585,7 @@ id(User, {NodeAddr, NodeName}, Suffix) ->
 
 item_content() ->
     #xmlel{name = <<"entry">>,
-           attrs = [{<<"xmlns">>, <<"http://www.w3.org/2005/Atom">>}]}.
+           attrs = #{<<"xmlns">> => <<"http://www.w3.org/2005/Atom">>}}.
 
 decode_config_form(IQResult) ->
     decode_form(IQResult, ?NS_PUBSUB_OWNER, <<"configure">>).

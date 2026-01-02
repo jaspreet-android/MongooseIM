@@ -6,14 +6,14 @@ Recommended port number: 5280 for BOSH/WS.
 
 ## Configuration options
 
-Following configuration option is used to set up an HTTP handler:
+For each HTTP listener, all the [general](../configuration/listen.md#general-listener-options) options are accepted. Additionally, the following configuration option is used to set up HTTP handlers:
 
 ### `listen.http.handlers`
 * **Syntax:** each handler is specified in a subsection starting with `[[listen.http.handlers.type]]` where `type` is one of the allowed handler types, handling different connection types:
 
     * `mod_bosh` - for [BOSH](https://xmpp.org/extensions/xep-0124.html) connections,
     * `mod_websockets` - for [WebSocket](https://tools.ietf.org/html/rfc6455) connections,
-    * `mongoose_prometheus_handler` - for [Prometheus]((https://prometheus.io/) metrics,
+    * `mongoose_prometheus_handler` - for [Prometheus](https://prometheus.io/) metrics,
     * `mongoose_graphql_handler` - for GraphQL API,
     * `mongoose_admin_api`, `mongoose_client_api` - for REST API.
 
@@ -82,9 +82,9 @@ Maximum allowed incoming stanza size in bytes.
 !!! Warning
     This limit is checked **after** the input data parsing, so it does not apply to the input data size itself.
 
-### `listen.http.handlers.mod_websockets.c2s_state_timeout`
+### `listen.http.handlers.mod_websockets.state_timeout`
 
-Same as the [C2S option](listen-c2s.md#listenc2sstate_timeout).
+Same as the [XMPP option](../configuration/listen.md#listenstate_timeout).
 
 ### `listen.http.handlers.mod_websockets.backwards_compatible_session`
 
@@ -216,7 +216,7 @@ If the keyfile is password-protected, `password` is required as well.
 If the certificate is signed by an intermediate CA, one will probably want to specify the CA chain with the `cacertfile` option.
 The library used for HTTP is the Erlang TLS implementation provided by OTP - see [ranch_ssl](https://github.com/ninenines/ranch/blob/master/doc/src/manual/ranch_ssl.asciidoc) for details.
 
-The options accepted here are: `verify_mode`, `certfile`, `cacertfile`, `ciphers`, `keyfile`, `password`, `versions`, `dhfile`. They have the same semantics as the corresponding [c2s options](listen-c2s.md#tls-options-for-c2s) for `just_tls`.
+The options accepted here are: `verify_mode`, `certfile`, `cacertfile`, `ciphers`, `keyfile`, `password`, `versions`, `dhfile`. They have the same semantics as the corresponding [c2s options](listen-c2s.md#tls-options-for-c2s).
 
 ## Protocol options
 

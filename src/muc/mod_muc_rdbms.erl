@@ -212,14 +212,12 @@ store_nick_transaction(HostType, MucHost, Jid, Nick, true) ->
     {LU, LS} = jid:to_lus(Jid),
     InsertParams = [MucHost, LU, LS, Nick],
     UpdateParams = [Nick],
-    UniqueKeyValues  = [MucHost, LU, LS],
-    case rdbms_queries:execute_upsert(HostType, muc_nick_upsert,
-                                      InsertParams, UpdateParams, UniqueKeyValues) of
+    case rdbms_queries:execute_upsert(HostType, muc_nick_upsert, InsertParams, UpdateParams) of
         {updated, _} -> ok;
         Error -> Error
     end.
 
--spec store_room_transaction(mongooseim:host_type(), muc_host(), jid:luser(), binary(), term()) -> ok.
+-spec store_room_transaction(mongooseim:host_type(), muc_host(), jid:luser(), iodata(), term()) -> ok.
 store_room_transaction(HostType, MucHost, RoomName, ExtOpts, Affs) ->
     execute_insert_room(HostType, MucHost, RoomName, ExtOpts),
     Result = execute_select_room_id(HostType, MucHost, RoomName),
@@ -249,7 +247,7 @@ forget_room_transaction(HostType, MucHost, RoomName) ->
 
 %% Execute call functions
 
--spec execute_insert_room(mongooseim:host_type(), muc_host(), jid:luser(), binary()) -> ok.
+-spec execute_insert_room(mongooseim:host_type(), muc_host(), jid:luser(), iodata()) -> ok.
 execute_insert_room(HostType, MucHost, RoomName, ExtOpts) ->
     Args = [MucHost, RoomName, ExtOpts],
     execute_successfully(HostType, muc_insert_room, Args),

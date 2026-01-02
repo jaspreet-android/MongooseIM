@@ -138,8 +138,10 @@ handle_user_terminate(Acc, StateData, Presences, Reason) ->
     PresenceUnavailable = presence_unavailable_stanza(Status),
     ParamsAcc = #{from_jid => Jid, to_jid => jid:to_bare(Jid), element => PresenceUnavailable},
     Acc1 = mongoose_acc:update_stanza(ParamsAcc, Acc),
-    presence_broadcast(Acc1, Presences),
-    mongoose_hooks:unset_presence(Acc1, Jid, Status),
+    Sid = mongoose_c2s:get_sid(StateData),
+    Info = mongoose_c2s:get_info(StateData),
+    ejabberd_sm:unset_presence(Acc1, Sid, Jid, Status, Info),
+    presence_broadcast_filtered(Acc1, Reason, Presences),
     {ok, Acc}.
 
 -spec foreign_event(Acc, Params, Extra) -> Result when
@@ -203,7 +205,7 @@ foreign_event(Acc, _Params, _Extra) ->
 get_showtag(undefined) ->
     <<"unavailable">>;
 get_showtag(Presence) ->
-    case xml:get_path_s(Presence, [{elem, <<"show">>}, cdata]) of
+    case exml_query:path(Presence, [{element, <<"show">>}, cdata], <<>>) of
         <<>> -> <<"available">>;
         ShowTag -> ShowTag
     end.
@@ -213,7 +215,7 @@ get_showtag(Presence) ->
 get_statustag(undefined) ->
     <<>>;
 get_statustag(Presence) ->
-    xml:get_path_s(Presence, [{elem, <<"status">>}, cdata]).
+    exml_query:path(Presence, [{element, <<"status">>}, cdata], <<>>).
 
 -spec handle_subscription_change(
         mongoose_acc:t(), mongoose_c2s:data(), mod_roster:contact(), term(), state()) ->
@@ -312,7 +314,7 @@ route_probe(Acc, Presences, FromJid, ToJid) ->
     Packet0 = Presences#presences_state.pres_last,
     TS = Presences#presences_state.pres_timestamp,
     %% To is the one sending the presence (the target of the probe)
-    Packet1 = jlib:maybe_append_delay(Packet0, ToJid, TS, <<>>),
+    Packet1 = jlib:maybe_append_delay(Packet0, ToJid, TS, <<"Delayed presence">>),
     HostType = mongoose_acc:host_type(Acc),
     Acc2 = mongoose_hooks:presence_probe(HostType, Acc, FromJid, ToJid, self()),
     %% Don't route a presence probe to oneself
@@ -424,6 +426,39 @@ process_presence_track_subscription_and_route(Acc, FromJid, ToJid, Packet, Type)
     ejabberd_router:route(jid:to_bare(FromJid), ToJid, Acc1, Packet),
     Acc1.
 
+-spec presence_broadcast_filtered(mongoose_acc:t(), term(), state()) -> ok.
+presence_broadcast_filtered(Acc, _Reason = {shutdown, resumed}, #presences_state{available = Available}) ->
+    % broadcast only to others, skip self
+    {FromJID, _, Packet} = mongoose_acc:packet(Acc),
+    sets:fold(fun(ToJID, _) ->
+                  route_with_self_skip(FromJID, ToJID, Acc, Packet)
+              end, undefined, Available);
+presence_broadcast_filtered(Acc, _Reason = {shutdown, {replaced, Pid}}, #presences_state{available = Available}) ->
+    {FromJID, _, Packet} = mongoose_acc:packet(Acc),
+    % Get all resources of the same user (FromJID) and their PIDs
+    ResourcesPids = ejabberd_sm:get_user_present_resources_and_pids(FromJID),
+    % Route to all resources of FromJID except the one that matches the replaced Pid
+    RouteToResources = fun({Resource, ResPid}) ->
+                           case ResPid of
+                               Pid -> ok;  % Skip this resource as it matches the replaced Pid
+                               _ ->
+                                   % Create the full JID for this resource
+                                   ResourceJID = jid:replace_resource(FromJID, Resource),
+                                   ejabberd_router:route(FromJID, ResourceJID, Acc, Packet)
+                           end
+                       end,
+    lists:foreach(RouteToResources, ResourcesPids),
+    % Also route to all Available JIDs except FromJID bare itself
+    RouteToAvailable = fun(ToJID, _) ->
+                           case jid:are_bare_equal(FromJID, ToJID) of
+                               true -> ok;  % Skip FromJID itself
+                               false -> ejabberd_router:route(FromJID, ToJID, Acc, Packet)
+                           end
+                       end,
+    sets:fold(RouteToAvailable, undefined, Available);
+presence_broadcast_filtered(Acc, _Reason, #presences_state{available = Available}) ->
+    presence_broadcast(Acc, #presences_state{available = Available}).
+
 -spec presence_broadcast(mongoose_acc:t(), state()) -> ok.
 presence_broadcast(Acc, #presences_state{available = Available}) ->
     {FromJID, _, Packet} = mongoose_acc:packet(Acc),
@@ -472,7 +507,7 @@ presence_broadcast_to_trusted(Acc, FromJid, Presences, Packet) ->
 
 -spec resend_offline_messages(mongoose_acc:t(), mongoose_c2s:data()) -> mongoose_acc:t().
 resend_offline_messages(Acc, StateData) ->
-    ?LOG_DEBUG(#{what => resend_offline_messages, acc => Acc, c2s_state => StateData}),
+    ?LOG_DEBUG(#{what => resend_offline_messages, acc => Acc, c2s_data => StateData}),
     Jid = mongoose_c2s:get_jid(StateData),
     Acc1 = mongoose_hooks:resend_offline_messages(Acc, Jid),
     Rs = mongoose_acc:get(offline, messages, [], Acc1),
@@ -537,7 +572,7 @@ create_route_accs(Acc0, To, List) when is_list(List) ->
 -spec presence_probe() -> exml:element().
 presence_probe() ->
     #xmlel{name = <<"presence">>,
-           attrs = [{<<"type">>, <<"probe">>}]}.
+           attrs = #{<<"type">> => <<"probe">>}}.
 
 -spec presence_unavailable_stanza() -> exml:element().
 presence_unavailable_stanza() ->
@@ -546,19 +581,19 @@ presence_unavailable_stanza() ->
 -spec presence_unavailable_stanza(binary()) -> exml:element().
 presence_unavailable_stanza(<<>>) ->
     #xmlel{name = <<"presence">>,
-           attrs = [{<<"type">>, <<"unavailable">>}]};
+           attrs = #{<<"type">> => <<"unavailable">>}};
 presence_unavailable_stanza(Status) ->
     StatusEl = #xmlel{name = <<"status">>,
                       children = [#xmlcdata{content = Status}]},
     #xmlel{name = <<"presence">>,
-           attrs = [{<<"type">>, <<"unavailable">>}],
+           attrs = #{<<"type">> => <<"unavailable">>},
            children = [StatusEl]}.
 
 close_session_status(normal) ->
     <<>>;
 close_session_status({shutdown, retries}) ->
     <<"Too many attempts">>;
-close_session_status({shutdown, replaced}) ->
+close_session_status({shutdown, {replaced, _Pid}}) ->
     <<"Replaced by new connection">>;
 close_session_status({shutdown, Reason}) when is_atom(Reason) ->
     <<"Shutdown by reason: ", (atom_to_binary(Reason))/binary>>;
@@ -566,6 +601,29 @@ close_session_status({shutdown, Reason}) when is_binary(Reason) ->
     <<"Shutdown by reason: ", Reason/binary>>;
 close_session_status(_) ->
     <<"Unknown condition">>.
+
+%% @doc Route packet with self-skip logic for same bare JID resources
+-spec route_with_self_skip(jid:jid(), jid:jid(), mongoose_acc:t(), exml:element()) -> ok.
+route_with_self_skip(FromJID, ToJID, Acc, Packet) ->
+    case jid:are_bare_equal(FromJID, ToJID) of
+        true ->
+            % ToJID should be bare if self
+            route_to_other_resources(FromJID, Acc, Packet);
+        false ->
+            ejabberd_router:route(FromJID, ToJID, Acc, Packet)
+    end.
+
+%% @doc Route packet to all user resources except the sender
+-spec route_to_other_resources(jid:jid(), mongoose_acc:t(), exml:element()) -> ok.
+route_to_other_resources(FromJID, Acc, Packet) ->
+    Resources = ejabberd_sm:get_user_resources(FromJID),
+    lists:foreach(fun(Resource) ->
+                      ResourceJID = jid:replace_resource(FromJID, Resource),
+                      case jid:are_equal(FromJID, ResourceJID) of
+                          true -> ok;  % Skip self
+                          false -> ejabberd_router:route(FromJID, ResourceJID, Acc, Packet)
+                      end
+                  end, Resources).
 
 -spec get_presence_type(mongoose_acc:t()) -> maybe_presence().
 get_presence_type(Acc) ->
@@ -688,12 +746,8 @@ get_by_sub(#presences_state{subscriptions = Subs}, DesiredStatus) ->
     Filter = fun(_, Status) -> both =:= Status orelse DesiredStatus =:= Status end,
     maps:filter(Filter, Subs).
 
--spec get(state(), s_to) -> subscriptions();
-         (state(), s_from) -> subscriptions();
-         (state(), s_available) -> available();
-         (state(), priority) -> priority();
-         (state(), last) -> undefined | exml:element();
-         (state(), timestamp) -> undefined | integer().
+-spec get(state(), s_to | s_from | s_available | priority | last | timestamp) ->
+          subscriptions() | available() | priority() | exml:element() | integer() | undefined.
 get(P, s_to) -> get_by_sub(P, to);
 get(P, s_from) -> get_by_sub(P, from);
 get(#presences_state{available = Value}, s_available) -> Value;

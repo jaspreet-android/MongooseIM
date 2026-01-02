@@ -6,7 +6,7 @@ TESTSPEC ?= default.spec
 PRESET   ?= all
 CT_HOOKS ?=
 PREPARE  ?= prepare
-ADD_OPTS ?= -sasl sasl_error_logger false -lager handlers []
+ADD_OPTS ?= -sasl sasl_error_logger false
 TLS_DIST ?= false
 REPO_DIR ?= ..
 TEST_DIR ?= .
@@ -23,6 +23,9 @@ TLS_DIST_OPTS := -args_file vm.dist.args
 else
 TLS_DIST_OPTS :=
 endif
+
+REMSH_OPTS := -setcookie mongooseim \
+               $(TLS_DIST_OPTS)
 
 COMMON_OPTS := -sname test -setcookie mongooseim -hidden \
                $(TLS_DIST_OPTS) \
@@ -47,7 +50,7 @@ cover_test_clean: get-deps
 	$(MAKE) cover_test
 
 quicktest: $(PREPARE)
-	$(RUN) erl -noinput $(COMMON_OPTS) $(ADD_OPTS) \
+	$(RUN) erl -hidden -noinput $(COMMON_OPTS) $(ADD_OPTS) \
 			-s run_common_test main test=quick spec=$(TESTSPEC)
 
 cover_quicktest: $(PREPARE)
@@ -71,6 +74,11 @@ test_preset: $(PREPARE)
 test: $(PREPARE)
 	$(RUN) erl -noinput $(COMMON_OPTS) $(ADD_OPTS) \
 			-s run_common_test main test=full spec=$(TESTSPEC)
+
+# Open remote shell to the test node
+remsh:
+	erl $(REMSH_OPTS) $(ADD_OPTS) \
+			-remsh "test@$(shell hostname -s)" -sname remshnode
 
 prepare: mim_ct_rest compile vm.dist.args
 	erlc -I_build/default/lib/exml/include \
@@ -100,7 +108,7 @@ console: $(PREPARE)
 	erl $(COMMON_OPTS) $(ADD_OPTS) -s run_common_test init
 
 compile: get-deps deps
-	$(RUN) $(REBAR) compile
+	@ERL_LIBS="../_build/prod/lib" $(RUN) $(REBAR) compile
 
 get-deps:
 	$(RUN) $(REBAR) deps

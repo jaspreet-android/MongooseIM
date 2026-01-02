@@ -1,7 +1,7 @@
 -module(mod_bosh_socket).
 
 -behaviour(gen_fsm_compat).
--behaviour(mongoose_c2s_socket).
+-behaviour(mongoose_xmpp_socket).
 
 %% API
 -export([start/5,
@@ -19,19 +19,17 @@
          set_client_acks/2,
          get_cached_responses/1]).
 
-
-%% mongoose_c2s_socket callbacks
--export([socket_new/2,
-         socket_peername/1,
-         tcp_to_tls/2,
-         socket_handle_data/2,
-         socket_activate/1,
-         socket_send_xml/2,
-         socket_close/1,
-         get_peer_certificate/2,
+%% mongoose_xmpp_socket callbacks
+-export([peername/1,
+         tcp_to_tls/3,
+         handle_data/2,
+         activate/1,
+         send_xml/2,
+         close/1,
+         get_peer_certificate/1,
          has_peer_cert/2,
          is_channel_binding_supported/1,
-         get_tls_last_message/1,
+         export_key_materials/5,
          is_ssl/1]).
 
 %% gen_fsm callbacks
@@ -84,7 +82,7 @@
                 inactivity      :: pos_integer() | infinity,
                 inactivity_tref :: reference() | 'undefined',
                 %% Max pause period in seconds.
-                max_pause        :: pos_integer(),
+                max_pause        :: pos_integer() | undefined,
                 max_wait        :: pos_integer() | infinity,
                 %% Are acknowledgements used?
                 server_acks     :: boolean(),
@@ -116,14 +114,7 @@ start_link(HostType, Sid, Peer, PeerCert, Opts) ->
 -spec start_supervisor() -> {ok, pid()} | {error, any()}.
 start_supervisor() ->
     ChildId = ?BOSH_SOCKET_SUP,
-    ChildSpec =
-        {ChildId,
-         {ejabberd_tmp_sup, start_link,
-          [ChildId, ?MODULE]},
-         transient,
-         infinity,
-         supervisor,
-         [ejabberd_tmp_sup]},
+    ChildSpec = ejabberd_sup:template_supervisor_spec(ChildId, ?MODULE),
     case supervisor:start_child(ejabberd_sup, ChildSpec) of
         {ok, undefined} ->
             {error, undefined};
@@ -204,7 +195,6 @@ init([{HostType, Sid, Peer, PeerCert, ListenerOpts}]) ->
     BoshSocket = #bosh_socket{sid = Sid, pid = self(), peer = Peer, peercert = PeerCert},
     C2SOpts = ListenerOpts#{access => all,
                             shaper => none,
-                            xml_socket => true,
                             max_stanza_size => 0,
                             hibernate_after => 0,
                             state_timeout => 5000,
@@ -729,23 +719,23 @@ send_wrapped_to_handler(Pid, Wrapped, State) ->
     State.
 
 
--spec maybe_ack(rid(), state()) -> [{binary(), _}].
-maybe_ack(HandlerRid, #state{rid = Rid} = S) ->
+-spec maybe_add_ack(rid(), state(), exml:attrs()) -> exml:attrs().
+maybe_add_ack(HandlerRid, #state{rid = Rid} = S, Attrs) ->
     case Rid > HandlerRid of
         true ->
-            server_ack(S#state.server_acks, Rid);
+            server_ack(S#state.server_acks, Rid, Attrs);
         false ->
-            []
+            Attrs
     end.
 
 
--spec maybe_report(state()) -> {[{binary(), _}], state()}.
-maybe_report(#state{report = false} = S) ->
-    {[], S};
-maybe_report(#state{report = Report} = S) ->
+-spec maybe_add_report(state(), exml:attrs()) -> {exml:attrs(), state()}.
+maybe_add_report(#state{report = false} = S, Attrs) ->
+    {Attrs, S};
+maybe_add_report(#state{report = Report} = S, Attrs) ->
     {ReportRid, ElapsedTime} = Report,
-    NewAttrs = [{<<"report">>, integer_to_binary(ReportRid)},
-                {<<"time">>, integer_to_binary(ElapsedTime)}],
+    NewAttrs = Attrs#{<<"report">> => integer_to_binary(ReportRid),
+                      <<"time">> => integer_to_binary(ElapsedTime)},
     {NewAttrs, S#state{report = false}}.
 
 
@@ -903,15 +893,15 @@ get_attr(Attr, Element, Default) ->
     end.
 
 
--spec stream_start(binary(), binary()) -> jlib:xmlstreamstart().
+-spec stream_start(binary(), binary()) -> exml_stream:start().
 stream_start(From, To) ->
     #xmlstreamstart{name = <<"stream:stream">>,
-                    attrs = [{<<"from">>, From},
-                             {<<"to">>, To},
-                             {<<"version">>, <<"1.0">>},
-                             {<<"xml:lang">>, <<"en">>},
-                             {<<"xmlns">>, ?NS_CLIENT},
-                             {<<"xmlns:stream">>, ?NS_STREAM}]}.
+                    attrs = #{<<"from">> => From,
+                              <<"to">> => To,
+                              <<"version">> => <<"1.0">>,
+                              <<"xml:lang">> => <<"en">>,
+                              <<"xmlns">> => ?NS_CLIENT,
+                              <<"xmlns:stream">> => ?NS_STREAM}}.
 
 
 -spec bosh_wrap([any()], rid(), state()) -> {exml:element(), state()}.
@@ -935,12 +925,11 @@ bosh_wrap(Elements, Rid, #state{} = S) ->
             {{bosh_body(S), Stanzas},
              S#state{pending = Pending ++ [StreamEnd]}}
     end,
-    MaybeAck = maybe_ack(Rid, NS),
-    {MaybeReport, NNS} = maybe_report(NS),
+    Attrs1 = maybe_add_ack(Rid, NS, Body#xmlel.attrs),
+    {Attrs2, NNS} = maybe_add_report(NS, Attrs1),
     HasStreamPrefix = (exml_query:attr(Body, <<"xmlns:stream">>) /= undefined),
-    MaybeStreamPrefix = maybe_stream_prefix(HasStreamPrefix, Children),
-    ExtraAttrs = MaybeAck ++ MaybeReport ++ MaybeStreamPrefix,
-    {Body#xmlel{attrs = Body#xmlel.attrs ++ ExtraAttrs,
+    Attrs3 = maybe_add_stream_prefix(HasStreamPrefix, Children, Attrs2),
+    {Body#xmlel{attrs = Attrs3,
                 children = maybe_add_default_ns_to_children(Children)}, NNS}.
 
 
@@ -954,69 +943,75 @@ is_stream_event(_) ->
 
 
 %% @doc Bosh body for a session creation response.
--spec bosh_stream_start_body(jlib:xmlstreamstart(), state()) -> exml:element().
+-spec bosh_stream_start_body(exml_stream:start(), state()) -> exml:element().
 bosh_stream_start_body(#xmlstreamstart{attrs = Attrs}, #state{} = S) ->
-    #xmlel{name = <<"body">>,
-           attrs = [{<<"wait">>, integer_to_binary(S#state.wait)},
-                    {<<"requests">>,
-                     integer_to_binary(?CONCURRENT_REQUESTS)},
-                    {<<"hold">>, integer_to_binary(S#state.hold)},
-                    {<<"from">>, proplists:get_value(<<"from">>, Attrs)},
-                    %% TODO: how to support these with cowboy?
-                    {<<"accept">>, <<"deflate, gzip">>},
-                    {<<"sid">>, S#state.sid},
-                    {<<"xmpp:restartlogic">>, <<"true">>},
-                    {<<"xmpp:version">>, <<"1.0">>},
-                    {<<"xmlns">>, ?NS_HTTPBIND},
-                    {<<"xmlns:xmpp">>, <<"urn:xmpp:xbosh">>},
-                    {<<"xmlns:stream">>, ?NS_STREAM}] ++
-           inactivity(S#state.inactivity) ++
-           maxpause(S#state.max_pause) ++
-           %% TODO: shouldn't an ack be sent on restart?
-           server_ack(S#state.server_acks, S#state.rid),
-           children = []}.
+    Attrs1 = #{<<"wait">> => integer_to_binary(S#state.wait),
+               <<"requests">> => integer_to_binary(?CONCURRENT_REQUESTS),
+               <<"hold">> => integer_to_binary(S#state.hold),
+               <<"from">> => maps:get(<<"from">>, Attrs,undefined),
+               % TODO: how to support these with cowbo?
+               <<"accept">> => <<"deflate, gzip">>,
+               <<"sid">> => S#state.sid,
+               <<"xmpp:restartlogic">> => <<"true">>,
+               <<"xmpp:version">> => <<"1.0">>,
+               <<"xmlns">> => ?NS_HTTPBIND,
+               <<"xmlns:xmpp">> => <<"urn:xmpp:xbosh">>,
+               <<"xmlns:stream">> => ?NS_STREAM},
+
+    Attrs2 = inactivity(S#state.inactivity, Attrs1),
+    Attrs3 = maxpause(S#state.max_pause, Attrs2),
+
+    %% TODO: shouldn't an ack be sent on restart?
+    Attrs4 = server_ack(S#state.server_acks, S#state.rid, Attrs3),
+
+    #xmlel{name = <<"body">>,  attrs = Attrs4, children = []}.
 
 
--spec inactivity('infinity' | 'undefined' | pos_integer()) -> [{binary(), _}].
-inactivity(I) ->
-    [{<<"inactivity">>, integer_to_binary(I)} || is_integer(I)].
+-spec inactivity('infinity' | 'undefined' | pos_integer(), exml:attrs()) -> exml:attrs().
+inactivity(I, Attrs) when is_integer(I)->
+    Attrs#{<<"inactivity">> => integer_to_binary(I)};
+inactivity(_, Attrs) ->
+    Attrs.
 
 
--spec maxpause('undefined' | pos_integer()) -> [{binary(), _}].
-maxpause(MP) ->
-    [{<<"maxpause">>, integer_to_binary(MP)} || is_integer(MP)].
+-spec maxpause('undefined' | pos_integer(), exml:attrs()) -> exml:attrs().
+maxpause(MP, Attrs) when is_integer(MP)->
+    Attrs#{<<"maxpause">> =>  integer_to_binary(MP)};
+maxpause(_MP, Attrs)->
+    Attrs.
 
-
--spec server_ack('false' | 'true' | 'undefined', 'undefined' | rid())
-            -> [{binary(), _}].
-server_ack(ServerAcks, Rid) ->
-    [{<<"ack">>, integer_to_binary(Rid)} || ServerAcks =:= true].
+-spec server_ack('false' | 'true' | 'undefined', 'undefined' | rid(), exml:attrs())
+            -> exml:attrs().
+server_ack(true, Rid, Attrs) ->
+    Attrs#{<<"ack">> => integer_to_binary(Rid)};
+server_ack(_, _, Attrs) ->
+    Attrs.
 
 
 %% @doc Bosh body for an ordinary stream element(s).
 -spec bosh_body(state()) -> exml:element().
 bosh_body(#state{} = S) ->
     #xmlel{name = <<"body">>,
-           attrs = [{<<"sid">>, S#state.sid},
-                    {<<"xmlns">>, ?NS_HTTPBIND}],
+           attrs = #{<<"sid">> => S#state.sid,
+                     <<"xmlns">> => ?NS_HTTPBIND},
            children = []}.
 
 
 -spec bosh_stream_end_body() -> exml:element().
 bosh_stream_end_body() ->
     #xmlel{name = <<"body">>,
-           attrs = [{<<"type">>, <<"terminate">>},
-                    {<<"xmlns">>, ?NS_HTTPBIND}],
+           attrs = #{<<"type">> => <<"terminate">>,
+                     <<"xmlns">> => ?NS_HTTPBIND},
            children = []}.
 
-maybe_stream_prefix(true, _) ->
-    [];
-maybe_stream_prefix(_, Stanzas) ->
+maybe_add_stream_prefix(true, _, Attrs) ->
+    Attrs;
+maybe_add_stream_prefix(_, Stanzas, Attrs) ->
     case lists:any(fun is_stream_prefix/1, Stanzas) of
         false ->
-            [];
+            Attrs;
         true ->
-            [{<<"xmlns:stream">>, ?NS_STREAM}]
+            Attrs#{<<"xmlns:stream">> => ?NS_STREAM}
     end.
 
 is_stream_prefix(#xmlel{name = <<"stream:error">>}) -> true;
@@ -1032,10 +1027,10 @@ maybe_add_default_ns_to_children(Children) ->
     lists:map(fun maybe_add_default_ns/1, Children).
 
 maybe_add_default_ns(#xmlel{name = Name, attrs = Attrs} = El)
- when Name =:= <<"message">>; Name =:= <<"presence">>; Name =:= <<"iq">> ->
-    case xml:get_attr(<<"xmlns">>, Attrs) of
-        false ->
-            El#xmlel{attrs = [{<<"xmlns">>, ?NS_CLIENT} | Attrs]};
+  when Name =:= <<"message">>; Name =:= <<"presence">>; Name =:= <<"iq">> ->
+    case exml_query:attr(El, <<"xmlns">>) of
+        undefined ->
+            El#xmlel{attrs = Attrs#{<<"xmlns">> => ?NS_CLIENT}};
         _ ->
             El
     end;
@@ -1053,64 +1048,60 @@ ls(LogMap, State) ->
 ignore_undefined(Map) ->
     maps:filter(fun(_, V) -> V =/= undefined end, Map).
 
-%% mongoose_c2s_socket callbacks
+%% mongoose_xmpp_socket callbacks
 
--spec socket_new(mod_bosh:socket(), mongoose_listener:options()) -> mod_bosh:socket().
-socket_new(Socket, _LOpts) ->
-    Socket.
-
--spec socket_peername(mod_bosh:socket()) -> {inet:ip_address(), inet:port_number()}.
-socket_peername(#bosh_socket{peer = Peer}) ->
+-spec peername(mod_bosh:socket()) -> mongoose_transport:peer().
+peername(#bosh_socket{peer = Peer}) ->
     Peer.
 
--spec tcp_to_tls(mod_bosh:socket(), mongoose_listener:options()) ->
+-spec tcp_to_tls(mod_bosh:socket(), mongoose_listener:options(), mongoose_xmpp_socket:side()) ->
   {ok, mod_bosh:socket()} | {error, term()}.
-tcp_to_tls(_Socket, _LOpts) ->
-    {error, tls_not_allowed_on_bosh}.
+tcp_to_tls(_Socket, _LOpts, server) ->
+    {error, tcp_to_tls_not_allowed_on_bosh}.
 
--spec socket_handle_data(mod_bosh:socket(), {tcp | ssl, term(), iodata()}) ->
+-spec handle_data(mod_bosh:socket(), {tcp | ssl, term(), iodata()}) ->
   iodata() | {raw, [exml:element()]} | {error, term()}.
-socket_handle_data(_Socket, {_Kind, _Term, Packet}) ->
+handle_data(_Socket, {_Kind, _Term, Packet}) ->
     {raw, [Packet]}.
 
--spec socket_activate(mod_bosh:socket()) -> ok.
-socket_activate(_Socket) ->
+-spec activate(mod_bosh:socket()) -> ok.
+activate(_Socket) ->
     ok.
 
--spec socket_send_xml(mod_bosh:socket(),
+-spec send_xml(mod_bosh:socket(),
                       iodata() | exml_stream:element() | [exml_stream:element()]) ->
     ok | {error, term()}.
-socket_send_xml(#bosh_socket{pid = Pid}, XMLs) when is_list(XMLs) ->
+send_xml(#bosh_socket{pid = Pid}, XMLs) when is_list(XMLs) ->
     [Pid ! {send, XML} || XML <- XMLs],
     ok;
-socket_send_xml(#bosh_socket{pid = Pid}, XML) ->
+send_xml(#bosh_socket{pid = Pid}, XML) ->
     Pid ! {send, XML},
     ok.
 
--spec socket_close(mod_bosh:socket()) -> ok.
-socket_close(#bosh_socket{pid = Pid}) ->
+-spec close(mod_bosh:socket()) -> ok.
+close(#bosh_socket{pid = Pid}) ->
     Pid ! close,
     ok.
 
--spec get_peer_certificate(mod_bosh:socket(), mongoose_listener:options()) ->
+-spec get_peer_certificate(mod_bosh:socket()) ->
     mongoose_transport:peercert_return().
-get_peer_certificate(#bosh_socket{peercert = undefined}, _) ->
+get_peer_certificate(#bosh_socket{peercert = undefined}) ->
     no_peer_cert;
-get_peer_certificate(#bosh_socket{peercert = PeerCert}, _) ->
+get_peer_certificate(#bosh_socket{peercert = PeerCert}) ->
     Decoded = public_key:pkix_decode_cert(PeerCert, plain),
     {ok, Decoded}.
 
 -spec has_peer_cert(mod_bosh:socket(), mongoose_listener:options()) -> boolean().
-has_peer_cert(Socket, LOpts) ->
-    get_peer_certificate(Socket, LOpts) /= no_peer_cert.
+has_peer_cert(Socket, _) ->
+    get_peer_certificate(Socket) /= no_peer_cert.
 
 -spec is_channel_binding_supported(mod_bosh:socket()) -> boolean().
 is_channel_binding_supported(_Socket) ->
     false.
 
--spec get_tls_last_message(mod_bosh:socket()) -> {ok, binary()} | {error, term()}.
-get_tls_last_message(_Socket) ->
-    {error, tls_not_allowed_on_bosh}.
+-spec export_key_materials(mod_bosh:socket(), _, _, _, _) -> {error, atom()}.
+export_key_materials(_Socket, _, _, _, _) ->
+    {error, export_key_materials_not_allowed_on_bosh}.
 
 -spec is_ssl(mod_bosh:socket()) -> boolean().
 is_ssl(_Socket) ->

@@ -99,6 +99,9 @@ This applies to situations such as sending messages or presences to mobile/SMS/e
 Implements [XEP-0215: External Service Discovery](http://xmpp.org/extensions/xep-0215.html) for discovering information about services external to the XMPP network.
 The main use-case is to help discover STUN/TURN servers to allow for negotiating media exchanges.
 
+### [mod_fast_auth_token](../modules/mod_fast_auth_token.md)
+A module that implements [XEP-0484: Fast Authentication Streamlining Tokens](https://xmpp.org/extensions/xep-0484.html)..
+
 ### [mod_http_upload](../modules/mod_http_upload.md)
 Implements [XEP-0363: HTTP File Upload](https://xmpp.org/extensions/xep-0363.html) for coordinating with an XMPP server to upload files via HTTP and receive URLs that can be shared in messages.
 
@@ -192,4 +195,4 @@ These must **not** be enabled when using host types in `modules` or [`host_confi
 * [mod_push_service_mongoosepush](../modules/mod_push_service_mongoosepush.md)
 * [mod_shared_roster_ldap](../modules/mod_shared_roster_ldap.md)
 
-Please note, that [`s2s`](s2s.md) and the XMPP components (XEP-0114) mechanism, as configured in the [`listen.service` section](../listeners/listen-components.md), do not support dynamic domains as well.
+Please note, that [`s2s`](s2s.md) and the XMPP components (XEP-0114) mechanism, as configured in the [`listen.component` section](../listeners/listen-components.md), do not support dynamic domains as well.

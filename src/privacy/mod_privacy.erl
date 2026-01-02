@@ -166,7 +166,12 @@ handle_privacy_iq(Acc1, StateData, HostType, IQ) ->
 -spec user_receive_message(mongoose_acc:t(), mongoose_c2s_hooks:params(), gen_hook:extra()) ->
     mongoose_c2s_hooks:result().
 user_receive_message(Acc, #{c2s_data := StateData}, _Extra) ->
-    do_privacy_check_receive(Acc, StateData, send).
+    case mongoose_acc:stanza_type(Acc) of
+        <<"groupchat">> ->
+            do_privacy_check_receive(Acc, StateData, ignore);
+        _ ->
+            do_privacy_check_receive(Acc, StateData, send)
+    end.
 
 -spec user_receive_presence(mongoose_acc:t(), mongoose_c2s_hooks:params(), map()) ->
     mongoose_c2s_hooks:result().
@@ -295,7 +300,7 @@ process_privacy_iq(Acc, HostType, set, ToJid, StateData) ->
 
 -spec measure_privacy_set(jlib:iq()) -> mongoose_instrument:measurements().
 measure_privacy_set(#iq{sub_el = SubEl}) ->
-    case xml:remove_cdata(SubEl#xmlel.children) of
+    case jlib:remove_cdata(SubEl#xmlel.children) of
         [#xmlel{name = <<"active">>}] -> #{count => 1, active_count => 1};
         [#xmlel{name = <<"default">>}] -> #{count => 1, default_count => 1};
         _ -> #{count => 1}
@@ -316,7 +321,7 @@ maybe_update_presence(Acc, StateData, OldList, NewList) ->
 
 send_unavail_if_newly_blocked(Acc, Jid, ContactJID, OldList, NewList, StateData) ->
     Packet = #xmlel{name = <<"presence">>,
-                    attrs = [{<<"type">>, <<"unavailable">>}]},
+                    attrs = #{<<"type">> => <<"unavailable">>}},
     %% WARNING: we can not use accumulator to cache privacy check result - this is
     %% the only place where the list to check against changes
     {OldResult, _} = p_privacy_check_packet(Packet, Jid, ContactJID, out, OldList, StateData),
@@ -380,9 +385,9 @@ privacy_list_push_iq(PrivListName) ->
     #iq{type = set, xmlns = ?NS_PRIVACY,
         id = <<"push", (mongoose_bin:gen_from_crypto())/binary>>,
         sub_el = [#xmlel{name = <<"query">>,
-                         attrs = [{<<"xmlns">>, ?NS_PRIVACY}],
+                         attrs = #{<<"xmlns">> => ?NS_PRIVACY},
                          children = [#xmlel{name = <<"list">>,
-                                            attrs = [{<<"name">>, PrivListName}]}]}]}.
+                                            attrs = #{<<"name">> => PrivListName}}]}]}.
 
 -spec disco_local_features(mongoose_disco:feature_acc(), map(), map()) ->
     {ok, mongoose_disco:feature_acc()}.
@@ -402,13 +407,13 @@ process_iq_get(Acc,
                  iq := #iq{xmlns = ?NS_PRIVACY, sub_el = #xmlel{children = Els}},
                  priv_list := #userlist{name = Active}},
                #{host_type := HostType}) ->
-    Res = case xml:remove_cdata(Els) of
+    Res = case jlib:remove_cdata(Els) of
               [] ->
                   process_lists_get(Acc, HostType, LUser, LServer, Active);
-              [#xmlel{name = Name, attrs = Attrs}] ->
+              [#xmlel{name = Name} = Packet] ->
                   case Name of
                       <<"list">> ->
-                          ListName = xml:get_attr(<<"name">>, Attrs),
+                          ListName = exml_query:attr(Packet, <<"name">>),
                           process_list_get(Acc, HostType, LUser, LServer, ListName);
                       _ ->
                           {error, mongoose_xmpp_errors:bad_request()}
@@ -432,7 +437,9 @@ process_lists_get(Acc, HostType, LUser, LServer, Active) ->
             {error, mongoose_xmpp_errors:internal_server_error()}
     end.
 
-process_list_get(Acc, HostType, LUser, LServer, {value, Name}) ->
+process_list_get(_Acc, _HostType, _LUser, _LServer, undefined) ->
+    {error, mongoose_xmpp_errors:bad_request(<<"en">>, <<"name attribute is missing">>)};
+process_list_get(Acc, HostType, LUser, LServer, Name) ->
     case mod_privacy_backend:get_privacy_list(HostType, LUser, LServer, Name) of
         {ok, List} ->
             LItems = lists:map(fun item_to_xml/1, List),
@@ -443,9 +450,7 @@ process_list_get(Acc, HostType, LUser, LServer, {value, Name}) ->
             ?LOG_ERROR(#{what => privacy_get_privacy_list_failed,
                          reason => Reason, acc => Acc}),
             {error, mongoose_xmpp_errors:internal_server_error()}
-    end;
-process_list_get(_Acc, _HostType, _LUser, _LServer, false) ->
-    {error, mongoose_xmpp_errors:bad_request(<<"en">>, <<"name attribute is missing">>)}.
+    end.
 
 -spec process_iq_set(Acc, Params, Extra) -> {ok, Acc} when
     Acc :: mongoose_acc:t(),
@@ -455,13 +460,13 @@ process_iq_set(Acc,
                #{from := From, iq := #iq{xmlns = ?NS_PRIVACY, sub_el = SubEl}},
                #{host_type := HostType}) ->
     #xmlel{children = Els} = SubEl,
-    Res = case xml:remove_cdata(Els) of
-              [#xmlel{name = Name, attrs = Attrs, children = SubEls}] ->
-                  ListName = xml:get_attr(<<"name">>, Attrs),
+    Res = case jlib:remove_cdata(Els) of
+              [#xmlel{name = Name, children = SubEls} = Packet] ->
+                  ListName = exml_query:attr(Packet, <<"name">>),
                   case Name of
                       <<"list">> ->
                           process_list_set(Acc, HostType, From, ListName,
-                                   xml:remove_cdata(SubEls));
+                                   jlib:remove_cdata(SubEls));
                       <<"active">> ->
                           process_active_set(Acc, HostType, From, ListName);
                       <<"default">> ->
@@ -476,7 +481,16 @@ process_iq_set(Acc,
 process_iq_set(Acc, _, _) ->
     {ok, Acc}.
 
-process_default_set(Acc, HostType, #jid{luser = LUser, lserver = LServer}, {value, Name}) ->
+process_default_set(Acc, HostType, #jid{luser = LUser, lserver = LServer}, undefined) ->
+    case mod_privacy_backend:forget_default_list(HostType, LUser, LServer) of
+        ok ->
+            {result, []};
+        {error, Reason} ->
+            ?LOG_ERROR(#{what => privacy_process_default_set_failed,
+                         reason => Reason, acc => Acc}),
+            {error, mongoose_xmpp_errors:internal_server_error()}
+    end;
+process_default_set(Acc, HostType, #jid{luser = LUser, lserver = LServer}, Name) ->
     case mod_privacy_backend:set_default_list(HostType, LUser, LServer, Name) of
         ok ->
             {result, []};
@@ -486,18 +500,11 @@ process_default_set(Acc, HostType, #jid{luser = LUser, lserver = LServer}, {valu
             ?LOG_ERROR(#{what => privacy_process_default_set_failed,
                          reason => Reason, acc => Acc}),
             {error, mongoose_xmpp_errors:internal_server_error()}
-    end;
-process_default_set(Acc, HostType, #jid{luser = LUser, lserver = LServer}, false) ->
-    case mod_privacy_backend:forget_default_list(HostType, LUser, LServer) of
-        ok ->
-            {result, []};
-        {error, Reason} ->
-            ?LOG_ERROR(#{what => privacy_process_default_set_failed,
-                         reason => Reason, acc => Acc}),
-            {error, mongoose_xmpp_errors:internal_server_error()}
     end.
 
-process_active_set(Acc, HostType, #jid{luser = LUser, lserver = LServer}, {value, Name}) ->
+process_active_set(_Acc, _HostType, _UserJID, undefined) ->
+    {result, [], #userlist{}};
+process_active_set(Acc, HostType, #jid{luser = LUser, lserver = LServer}, Name) ->
     case mod_privacy_backend:get_privacy_list(HostType, LUser, LServer, Name) of
         {ok, List} ->
             NeedDb = is_list_needdb(List),
@@ -508,11 +515,11 @@ process_active_set(Acc, HostType, #jid{luser = LUser, lserver = LServer}, {value
             ?LOG_ERROR(#{what => privacy_process_active_set_failed,
                          reason => Reason, acc => Acc}),
             {error, mongoose_xmpp_errors:internal_server_error()}
-    end;
-process_active_set(_Acc, _HostType, _UserJID, false) ->
-    {result, [], #userlist{}}.
+    end.
 
-process_list_set(Acc, HostType, UserJID, {value, Name}, Els) ->
+process_list_set(_Acc, _HostType, _UserJID, undefined, _Els) ->
+    {error, mongoose_xmpp_errors:bad_request()};
+process_list_set(Acc, HostType, UserJID, Name, Els) ->
     case parse_items(Els) of
         false ->
             {error, mongoose_xmpp_errors:bad_request()};
@@ -520,9 +527,7 @@ process_list_set(Acc, HostType, UserJID, {value, Name}, Els) ->
             remove_privacy_list(Acc, HostType, UserJID, Name);
         List ->
             replace_privacy_list(Acc, HostType, UserJID, Name, List)
-    end;
-process_list_set(_Acc, _HostType, _UserJID, false, _Els) ->
-    {error, mongoose_xmpp_errors:bad_request()}.
+    end.
 
 remove_privacy_list(Acc, HostType, #jid{luser = LUser, lserver = LServer} = UserJID, Name) ->
     case mod_privacy_backend:remove_privacy_list(HostType, LUser, LServer, Name) of
@@ -677,6 +682,13 @@ is_type_match(jid, Value, JID, _Subscription, _Groups) ->
                 _ ->
                     false
             end;
+        {<<>>, Server, Resource} ->
+            case JID of
+                {_, Server, Resource} ->
+                    true;
+                _ ->
+                    false
+            end;
         _ ->
             Value == JID
     end;
@@ -744,12 +756,11 @@ parse_items(Els) ->
 parse_items([], Res) ->
     %% Sort the items by their 'order' attribute
     lists:keysort(#listitem.order, Res);
-parse_items([#xmlel{name = <<"item">>, attrs = Attrs,
-                    children = SubEls} | Els], Res) ->
-    Type    = xml:get_attr_s(<<"type">>,   Attrs),
-    Value   = xml:get_attr_s(<<"value">>,  Attrs),
-    SAction = xml:get_attr_s(<<"action">>, Attrs),
-    SOrder  = xml:get_attr_s(<<"order">>,  Attrs),
+parse_items([#xmlel{name = <<"item">>, children = SubEls} = El | Els], Res) ->
+    Type    = exml_query:attr(El, <<"type">>, <<>>),
+    Value   = exml_query:attr(El, <<"value">>, <<>>),
+    SAction = exml_query:attr(El, <<"action">>, <<>>),
+    SOrder  = exml_query:attr(El, <<"order">>, <<>>),
     Action  = parse_action(SAction),
     Order   = parse_order(SOrder),
     I1 = set_action_and_order(Action, Order),
@@ -813,7 +824,7 @@ set_type_and_value(<<"subscription">>, Value, Item) ->
 set_matches(_SubEls, false) ->
     false;
 set_matches(SubEls, Item) ->
-    parse_matches(Item, xml:remove_cdata(SubEls)).
+    parse_matches(Item, jlib:remove_cdata(SubEls)).
 
 parse_matches(Item, []) ->
     Item#listitem{match_all = true};
@@ -845,12 +856,12 @@ add_item(Item, Items) ->
 empty_list_names_query() ->
     #xmlel{
         name = <<"query">>,
-        attrs = [{<<"xmlns">>, ?NS_PRIVACY}]}.
+        attrs = #{<<"xmlns">> => ?NS_PRIVACY}}.
 
 list_names_query(Active, Default, ListNames) ->
     #xmlel{
         name = <<"query">>,
-        attrs = [{<<"xmlns">>, ?NS_PRIVACY}],
+        attrs = #{<<"xmlns">> => ?NS_PRIVACY},
         children = list_names(Active, Default, ListNames)}.
 
 list_names(Active, Default, ListNames) ->
@@ -859,16 +870,16 @@ list_names(Active, Default, ListNames) ->
     [list_name(<<"list">>, ListName) || ListName <- ListNames].
 
 list_name(Type, Name) ->
-    #xmlel{name = Type, attrs = [{<<"name">>, Name}]}.
+    #xmlel{name = Type, attrs = #{<<"name">> => Name}}.
 
 list_query_result(Name, LItems) ->
     #xmlel{
         name = <<"query">>,
-        attrs = [{<<"xmlns">>, ?NS_PRIVACY}],
+        attrs = #{<<"xmlns">> => ?NS_PRIVACY},
         children = [
             #xmlel{
                 name = <<"list">>,
-                attrs = [{<<"name">>, Name}],
+                attrs = #{<<"name">> => Name},
                 children = LItems}]}.
 
 item_to_xml(Item) ->
@@ -880,13 +891,13 @@ item_to_xml(Item) ->
 item_to_xml_attrs(Item=#listitem{type=none}) ->
     item_to_xml_attrs1(Item);
 item_to_xml_attrs(Item=#listitem{type=Type, value=Value}) ->
-    [{<<"type">>, type_to_binary(Type)},
-     {<<"value">>, value_to_binary(Type, Value)}
-     | item_to_xml_attrs1(Item)].
+    Attrs = item_to_xml_attrs1(Item),
+    Attrs#{<<"type">> => type_to_binary(Type),
+           <<"value">> => value_to_binary(Type, Value)}.
 
 item_to_xml_attrs1(#listitem{action=Action, order=Order}) ->
-    [{<<"action">>, action_to_binary(Action)},
-     {<<"order">>, order_to_binary(Order)}].
+    #{<<"action">> => action_to_binary(Action),
+      <<"order">> => order_to_binary(Order)}.
 
 item_to_xml_children(#listitem{match_all=true}) ->
     [];

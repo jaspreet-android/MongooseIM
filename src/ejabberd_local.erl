@@ -57,8 +57,7 @@
 -export([disco_local_features/3]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-         terminate/2, code_change/3]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -export([do_route/4]).
 
@@ -89,13 +88,9 @@
 %%====================================================================
 %% API
 %%====================================================================
-%%--------------------------------------------------------------------
-%% Function: start_link() -> {ok, Pid} | ignore | {error, Error}
-%% Description: Starts the server
-%%--------------------------------------------------------------------
--spec start_link() -> 'ignore' | {'error', _} | {'ok', pid()}.
+-spec start_link() -> gen_server:start_ret().
 start_link() ->
-    gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+    gen_server:start_link({local, ?MODULE}, ?MODULE, noargs, []).
 
 -spec process_iq(Acc :: mongoose_acc:t(),
                  From :: jid:jid(),
@@ -127,17 +122,27 @@ process_iq(_, Acc, From, To, El) ->
                        To :: jid:jid(),
                        Acc :: mongoose_acc:t(),
                        IQ :: jlib:iq()) -> mongoose_acc:t().
-process_iq_reply(From, To, Acc, #iq{id = ID} = IQ) ->
+process_iq_reply(From, To, Acc, #iq{type = Type, id = ID} = IQ) ->
     case get_iq_callback_in_cluster(ID, Acc) of
         {ok, Callback} ->
             Callback(From, To, Acc, IQ);
-        _ ->
+        Other ->
+            %% 8.2.3. IQ Semantics (https://www.rfc-editor.org/rfc/rfc6120)
+            %% An entity that receives a stanza of type "result" or "error" MUST
+            %% NOT respond to the stanza by sending a further IQ response of
+            %% type "result" or "error".
+            %% (Do not reply).
+            ?LOG_INFO(#{what => dropped_iq_reply,
+                        text => <<"User send an unexpected IQ "
+                                  " type=", (atom_to_binary(Type))/binary,
+                                  ". Ignore the stanza.">>,
+                        reason => Other, acc => Acc}),
             Acc
     end.
 
 -spec get_iq_callback_in_cluster(id(), mongoose_acc:t()) ->
         {ok, callback()} | {error, term()}.
-get_iq_callback_in_cluster(ID, Acc) ->
+get_iq_callback_in_cluster(ID, _Acc) ->
     %% We store information from which node the request is originating in the ID
     case parse_iq_id(ID) of
         local_node ->
@@ -145,8 +150,6 @@ get_iq_callback_in_cluster(ID, Acc) ->
         {remote_node, NodeName} ->
             rpc:call(NodeName, ?MODULE, get_iq_callback, [ID]);
         {error, Reason} ->
-            ?LOG_ERROR(#{what => parse_iq_id_failed,
-                         reason => Reason, acc => Acc}),
             {error, Reason}
     end.
 
@@ -261,22 +264,13 @@ disco_local_features(Acc, _, _) ->
 %%                         {stop, Reason}
 %% Description: Initiates the server
 %%--------------------------------------------------------------------
-init([]) ->
+init(noargs) ->
     catch ets:new(?IQTABLE, [named_table, protected, {read_concurrency, true}]),
     catch ets:new(?NSTABLE, [named_table, bag, protected, {read_concurrency, true}]),
     catch ets:new(?IQRESPONSE, [named_table, public]),
     gen_hook:add_handlers(hooks()),
     {ok, #state{}}.
 
-%%--------------------------------------------------------------------
-%% Function: %% handle_call(Request, From, State) -> {reply, Reply, State} |
-%%                                      {reply, Reply, State, Timeout} |
-%%                                      {noreply, State} |
-%%                                      {noreply, State, Timeout} |
-%%                                      {stop, Reason, Reply, State} |
-%%                                      {stop, Reason, State}
-%% Description: Handling call messages
-%%--------------------------------------------------------------------
 handle_call({unregister_host, Host}, _From, State) ->
     Node = node(),
     [mongoose_c2s:stop(Pid, host_was_unregistered)
@@ -293,21 +287,9 @@ handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
 
-%%--------------------------------------------------------------------
-%% Function: handle_cast(Msg, State) -> {noreply, State} |
-%%                                      {noreply, State, Timeout} |
-%%                                      {stop, Reason, State}
-%% Description: Handling cast messages
-%%--------------------------------------------------------------------
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-%%--------------------------------------------------------------------
-%% Function: handle_info(Info, State) -> {noreply, State} |
-%%                                       {noreply, State, Timeout} |
-%%                                       {stop, Reason, State}
-%% Description: Handling all non call/cast messages
-%%--------------------------------------------------------------------
 handle_info({route, Acc, From, To, El}, State) ->
     spawn(fun() -> process_packet(Acc, From, To, El, #{}) end),
     {noreply, State};
@@ -340,13 +322,6 @@ handle_info(_Info, State) ->
 %%--------------------------------------------------------------------
 terminate(_Reason, _State) ->
     gen_hook:delete_handlers(hooks()).
-
-%%--------------------------------------------------------------------
-%% Func: code_change(OldVsn, State, Extra) -> {ok, NewState}
-%% Description: Convert process state when code is changed
-%%--------------------------------------------------------------------
-code_change(_OldVsn, State, _Extra) ->
-    {ok, State}.
 
 %%--------------------------------------------------------------------
 %%% Internal functions
