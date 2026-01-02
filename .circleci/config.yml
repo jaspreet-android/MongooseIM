@@ -5,7 +5,7 @@ references:
 
 # this allows you to use CircleCI's dynamic configuration feature
 setup: true
-
+# for release tags
 filters: &all_tags
   tags:
     only: /^\d+\.\d+\.\d+([a-z0-9\-\+])*/
